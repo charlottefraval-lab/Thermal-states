@@ -745,9 +745,9 @@ def main() -> None:
     # -----------------------
     # CONFIG
     # -----------------------
-    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("polariton_homodyne_results_balanced_both_5.npz")
+    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("polariton_homodyne_results_balanced_both_7.npz")
     save_figures = True
-    output_dir = Path("Plots_balanced_both_5")
+    output_dir = Path("Plots_balanced_both_7")
 
     # Choose what to replot and how
     time_trace = True

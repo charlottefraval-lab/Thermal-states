@@ -109,17 +109,17 @@ class CavityConfig:
     All dynamical coefficients are in units of ps^-1. To convert from meV, use ħ = 0.658 meV*ps.
     """
     detuning_inv_ps: float = 1.4e-1 / HBAR_MEV_PS   # Δ = δ_meV / ħ
-    nonlinearity_inv_ps: float = 1.2e-2 / HBAR_MEV_PS  # U = g_meV_um2 / ħ
+    nonlinearity_inv_ps: float =  1.2e-2 / HBAR_MEV_PS  # U = g_meV_um2 / ħ
     loss_inv_ps: float = 7e-2 / HBAR_MEV_PS       # γ
     kappa_out_inv_ps: float = 7e-2 / HBAR_MEV_PS  # output coupling used in input-output relation
-    F_s: complex = 1.2 + 0j      # coherent drive amplitude
+    F_s: complex = 0.7 + 0j      # coherent drive amplitude
     psi0: complex = 0.0 + 0.0j   # initial intracavity field
 
 
 @dataclass
 class SimulationConfig:
     """Global simulation parameters."""
-    duration_ps: float = 1.0e7        # total simulated time in ps -> resolution in MHz is ~ 1/duration_ps
+    duration_ps: float = 1.0e6        # total simulated time in ps -> resolution in MHz is ~ 1/duration_ps
     dt_ps: float = 1.0              # timestep; sampling rate = 1/dt
     discard_fraction: float = 0.1     # discard initial transient before PSD
     integrator: Literal["rk4", "heun", "euler"] = "rk4"
@@ -344,6 +344,7 @@ def cavity_rhs(
     nonlinearity_inv_ps: float,
     kappa_out_inv_ps: float,
     loss_inv_ps: float,
+    cfg: CavityConfig,
 ) -> complex:
     """Right-hand side of dψ/dt.
 
@@ -356,7 +357,7 @@ def cavity_rhs(
         1j * detuning_inv_ps * psi
         - 1j * nonlinearity_inv_ps * (abs(psi) ** 2) * psi
         - 0.5 * loss_inv_ps * psi
-        - 1j * F
+        + np.sqrt(cfg.kappa_out_inv_ps) * F
     )
 
 
@@ -380,6 +381,7 @@ def integrate_cavity(
             nonlinearity_inv_ps=cfg.nonlinearity_inv_ps,
             kappa_out_inv_ps=cfg.kappa_out_inv_ps,
             loss_inv_ps=cfg.loss_inv_ps,
+            cfg=cfg,
         )
 
     for k in range(n - 1):
@@ -1022,25 +1024,177 @@ def rbw_average_psd(
     p2 = psd[:n].reshape(-1, bins).mean(axis=1)
     return f2, p2
 
+# -----------------------------------------------------------------------------
+# Bistability preparation / pump sweep
+# -----------------------------------------------------------------------------
+
+def compute_bistability_curve(
+    cfg: FullConfig,
+    F_values: Array,
+    settle_time_ps: float = 2e4,
+) -> Dict[str, Array]:
+    """Compute hysteresis curve by sweeping pump amplitude up and down."""
+
+    t = time_axis(settle_time_ps, cfg.sim.dt_ps)
+
+    density_up = []
+    density_down = []
+
+    old_psi0 = cfg.cavity.psi0
+
+    # Sweep up
+    psi0 = 0.0 + 0.0j
+
+    for F in F_values:
+        cfg.cavity.psi0 = psi0
+        F_t = np.full(t.shape, F + 0j, dtype=np.complex128)
+
+        psi_t = integrate_cavity(
+            t,
+            F_t,
+            cfg.cavity,
+            integrator=cfg.sim.integrator,
+        )
+
+        psi0 = psi_t[-1]
+        density_up.append(np.abs(psi0) ** 2)
+
+    # Sweep down
+    for F in F_values[::-1]:
+        cfg.cavity.psi0 = psi0
+        F_t = np.full(t.shape, F + 0j, dtype=np.complex128)
+
+        psi_t = integrate_cavity(
+            t,
+            F_t,
+            cfg.cavity,
+            integrator=cfg.sim.integrator,
+        )
+
+        psi0 = psi_t[-1]
+        density_down.append(np.abs(psi0) ** 2)
+
+    cfg.cavity.psi0 = old_psi0
+
+    return {
+        "F_up": F_values,
+        "density_up": np.array(density_up),
+        "F_down": F_values[::-1],
+        "density_down": np.array(density_down),
+    }
+
+
+def make_square_cycle_drive(
+    t: Array,
+    F_low: complex,
+    F_high: complex,
+    F_work: complex,
+    t_rise_ps: float,
+    t_fall_ps: float,
+) -> ComplexArray:
+    """Generate pump cycle: low -> high -> working point."""
+
+    F_t = np.full(t.shape, F_low, dtype=np.complex128)
+
+    F_t[t >= t_rise_ps] = F_high
+    F_t[t >= t_fall_ps] = F_work
+
+    return F_t
+
+
+def prepare_upper_branch(
+    cfg: FullConfig,
+    F_low: complex,
+    F_high: complex,
+    F_work: complex,
+) -> complex:
+    """Prepare the cavity field on the upper bistable branch."""
+
+    t_prep = time_axis(cfg.sim.duration_ps, cfg.sim.dt_ps)
+
+    F_prep_t = make_square_cycle_drive(
+        t=t_prep,
+        F_low=F_low,
+        F_high=F_high,
+        F_work=F_work,
+        t_rise_ps=0.2 * cfg.sim.duration_ps,
+        t_fall_ps=0.7 * cfg.sim.duration_ps,
+    )
+
+    old_psi0 = cfg.cavity.psi0
+    cfg.cavity.psi0 = 0.0 + 0.0j
+
+    psi_prep_t = integrate_cavity(
+        t=t_prep,
+        F_t=F_prep_t,
+        cfg=cfg.cavity,
+        integrator=cfg.sim.integrator,
+    )
+
+    cfg.cavity.psi0 = old_psi0
+
+    psi_upper = psi_prep_t[-1]
+
+    print("Prepared upper-branch density:", np.abs(psi_upper) ** 2)
+
+    return psi_upper
 
 # -----------------------------------------------------------------------------
 # High-level simulation pipeline
 # -----------------------------------------------------------------------------
 
-def run_simulation(cfg: FullConfig) -> Dict[str, np.ndarray]:
+#def run_simulation(cfg: FullConfig) -> Dict[str, np.ndarray]:
+def run_simulation_with_upper_branch(
+    cfg: FullConfig,
+    F_low: complex,
+    F_high: complex,
+    F_work: complex,
+) -> Dict[str, np.ndarray]:
     """Run the full pipeline from noisy optical drive to homodyne PSD."""
     t_full = time_axis(cfg.sim.duration_ps, cfg.sim.dt_ps)
     dt_ps = cfg.sim.dt_ps
     fs_mhz = 1.0 / (dt_ps) * MHZ_PER_INV_PS  # Convert to MHz
 
     # Generate noisy input drive
+    #F_n, noise_aux = generate_drive_noise(t_full, cfg.noise)
+    #F_t = cfg.cavity.F_s + F_n
+
+    # Integrate cavity dynamics
+    #psi_t = integrate_cavity(t_full, F_t, cfg.cavity, integrator=cfg.sim.integrator)
+    #psi_t_wn = integrate_cavity(t_full, np.full(t_full.size, cfg.cavity.F_s), cfg.cavity, integrator=cfg.sim.integrator)
+
+    # Prepare upper branch
+    psi_upper = prepare_upper_branch(
+        cfg,
+        F_low=F_low,
+        F_high=F_high,
+        F_work=F_work,
+    )
+
+    # Use upper branch as initial condition
+    cfg.cavity.psi0 = psi_upper
+    cfg.cavity.F_s = F_work
+
+    # Generate noisy input drive around working point
     F_n, noise_aux = generate_drive_noise(t_full, cfg.noise)
     F_t = cfg.cavity.F_s + F_n
 
-    # Integrate cavity dynamics
-    psi_t = integrate_cavity(t_full, F_t, cfg.cavity, integrator=cfg.sim.integrator)
-    psi_t_wn = integrate_cavity(t_full, np.full(t_full.size, cfg.cavity.F_s), cfg.cavity, integrator=cfg.sim.integrator)
+    # Integrate noisy dynamics from upper branch
+    psi_t = integrate_cavity(
+        t_full,
+        F_t,
+        cfg.cavity,
+        integrator=cfg.sim.integrator,
+    )
 
+    # Reference without added noise, also from upper branch
+    psi_t_wn = integrate_cavity(
+        t_full,
+        np.full(t_full.size, cfg.cavity.F_s),
+        cfg.cavity,
+        integrator=cfg.sim.integrator,
+    )
+        
     # Compute output field
     s_out_t = output_field(F_t, psi_t, cfg.cavity)
     s_out_without_noise_t = output_field(cfg.cavity.F_s, psi_t_wn, cfg.cavity)
@@ -1397,7 +1551,54 @@ def main() -> None:
     # Optional stationary electronics foor
     cfg.detection.electronic_noise_psd_per_mhz = 0.0  # Add a fixed electronic noise floor to the measured current PSD (in current units^2/MHz)
 
-    results = run_simulation(cfg)
+    #results = run_simulation(cfg)
+
+    # -------------------------------------------------
+    # 1. Plot bistability curve
+    # -------------------------------------------------
+
+    F_values = np.linspace(0.0, 3.0, 100)
+
+    bistab = compute_bistability_curve(
+        cfg,
+        F_values,
+    )
+
+    plt.figure(figsize=(7, 5))
+    plt.scatter(bistab["F_up"], bistab["density_up"], label="Sweep up", marker="x")
+    plt.scatter(bistab["F_down"], bistab["density_down"], label="Sweep down", marker="+")
+    plt.xlabel("Pump amplitude F")
+    plt.ylabel(r"Intracavity density $|\psi|^2$")
+    plt.title("Polariton bistability")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # -------------------------------------------------
+    # 2. Choose pump values from the bistability curve
+    # -------------------------------------------------
+
+    F_low = 0.3 + 0j
+    F_high = 1.2 + 0j
+    F_work = 0.75 + 0j
+
+    cfg.cavity.F_s = F_work
+
+
+
+    # -------------------------------------------------
+    # 3. Run noisy simulation on upper branch
+    # -------------------------------------------------
+
+    results = run_simulation_with_upper_branch(
+        cfg,
+        F_low=F_low,
+        F_high=F_high,
+        F_work=F_work,
+    )
+
+
 
     # Diagnostics
     drive_stats = estimate_quadrature_variances(results["F_t"])
@@ -1416,8 +1617,9 @@ def main() -> None:
 
 
     # Save
-    save_results_npz("polariton_homodyne_results_balanced_both_5.npz", cfg, results)
-    print("\nSaved results to polariton_homodyne_results_balanced_both_5.npz")
+    #save_results_npz("/Users/charlotte/Documents/Thermal-states/polariton_homodyne_results_balanced_both_6.npz", cfg, results)
+    save_results_npz("polariton_homodyne_results_balanced_both_7.npz", cfg, results)
+    print("\nSaved results to polariton_homodyne_results_balanced_both_7.npz")
 
 
 if __name__ == "__main__":
