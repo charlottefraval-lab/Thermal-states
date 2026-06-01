@@ -71,6 +71,7 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt
 from numpy.typing import NDArray
+from scipy.stats import gaussian_kde
 
 # SciPy is convenient for Welch PSD. If unavailable, a fallback FFT-based PSD is provided.
 try:
@@ -186,11 +187,12 @@ class NoiseConfig:
     seed:
         RNG seed for reproducibility.
     """
-    mode: NoiseMode = "both"
+    mode: NoiseMode = "amplitude"
     cutoff_mhz: float = 2000.0  # MHz
-    gain_dB: float = 5.0
-    strength_amp: float =  DetectionConfig.sigma_vac*10**(gain_dB/20) # DetectionConfig.sigma_vac*np.sqrt((10 ** (gain_dB / 10.0) - 1))
-    strength_phase: float =  DetectionConfig.sigma_vac*10**(gain_dB/20) # DetectionConfig.sigma_vac*np.sqrt((10 ** (gain_dB / 10.0) - 1))
+    gain_dB_amp: float = 5.0
+    gain_dB_phase: float = 5.0
+    strength_amp: float =  DetectionConfig.sigma_vac*10**(gain_dB_amp/20) # DetectionConfig.sigma_vac*np.sqrt((10 ** (gain_dB_amp / 10.0) - 1))
+    strength_phase: float = DetectionConfig.sigma_vac*10**(gain_dB_phase/20) # DetectionConfig.sigma_vac*np.sqrt((10 ** (gain_dB_phase / 10.0) - 1))
     seed: int = 12345
 
 
@@ -1139,6 +1141,74 @@ def prepare_upper_branch(
 
     return psi_upper
 
+
+def choose_pump_values_from_bistability(
+    cfg: FullConfig,
+    F_min: float = 0.0,
+    F_max: float = 2.0,
+    n_F: int = 120,
+    alpha_work: float = 0.9,
+    alpha_low: float = 0.2,
+    alpha_high: float = 1.2,
+    threshold_fraction: float = 0.05,
+):
+    """
+    Choisit automatiquement F_low, F_high, F_work à partir
+    de la courbe de bistabilité pour le U courant.
+
+    alpha_work:
+        position relative dans la zone bistable.
+        0 = bord gauche, 1 = bord droit.
+
+    alpha_low:
+        F_low = alpha_low * F_left
+
+    alpha_high:
+        F_high = alpha_high * F_right
+    """
+
+    F_values = np.linspace(F_min, F_max, n_F)
+
+    bistab = compute_bistability_curve(
+        cfg,
+        F_values,
+    )
+
+    density_up = bistab["density_up"]
+    density_down = bistab["density_down"][::-1]
+
+    diff = np.abs(density_up - density_down)
+
+    threshold = threshold_fraction * np.max(diff)
+
+    bistable_indices = np.where(diff > threshold)[0]
+
+    if bistable_indices.size == 0:
+        raise RuntimeError(
+            "No bistable region found. Try increasing F_max "
+            "or lowering threshold_fraction."
+        )
+
+    i_left = bistable_indices[0]
+    i_right = bistable_indices[-1]
+
+    F_left = F_values[i_left]
+    F_right = F_values[i_right]
+
+    F_work = F_left + alpha_work * (F_right - F_left)
+
+    F_low = alpha_low * F_left
+    F_high = alpha_high * F_right
+
+    return {
+        "F_low": F_low + 0j,
+        "F_high": F_high + 0j,
+        "F_work": F_work + 0j,
+        "F_left": F_left,
+        "F_right": F_right,
+        "bistab": bistab,
+    }
+
 # -----------------------------------------------------------------------------
 # High-level simulation pipeline
 # -----------------------------------------------------------------------------
@@ -1375,24 +1445,32 @@ def plot_time_traces(results: Dict[str, np.ndarray], max_points: int = 5000) -> 
 
 def plot_phase_space(results: Dict[str, np.ndarray], max_points: int = 50000) -> None:
     x_in, p_in = results["x_in"], results["p_in"]
+    x_cav, p_cav = results["x_cav"], results["p_cav"]
     x_out, p_out = results["x_out"], results["p_out"]
 
     n = x_in.size
     step = max(1, n // max_points)
     sl = slice(None, None, step)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
     axes[0].scatter(x_in[sl], p_in[sl], s=2, alpha=0.2)
     axes[0].set_title("Input drive quadratures")
     axes[0].set_xlabel("X_in")
     axes[0].set_ylabel("P_in")
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].scatter(x_out[sl], p_out[sl], s=2, alpha=0.2)
-    axes[1].set_title("Output field quadratures")
-    axes[1].set_xlabel("X_out")
-    axes[1].set_ylabel("P_out")
+    axes[1].scatter(x_cav[sl], p_cav[sl], s=2, alpha=0.2)
+    axes[1].set_title("Intracavity field quadratures")
+    axes[1].set_xlabel("X_cav")
+    axes[1].set_ylabel("P_cav")
     axes[1].grid(True, alpha=0.3)
+
+    axes[2].scatter(x_out[sl], p_out[sl], s=2, alpha=0.2)
+    axes[2].set_title("Output field quadratures")
+    axes[2].set_xlabel("X_out")
+    axes[2].set_ylabel("P_out")
+    axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.show()
@@ -1439,6 +1517,80 @@ def plot_spectra(
     plt.show()
 
 
+def plot_kerneldensityestimation(
+    results,
+    gridsize=300,
+    cmap="magma",
+    remove_mean=True,
+):
+    from scipy.stats import gaussian_kde
+
+    datasets = [
+        ("Input", results["x_in"], results["p_in"], "X_in", "P_in"),
+        ("Intracavity", results["x_cav"], results["p_cav"], "X_cav", "P_cav"),
+        ("Output", results["x_out"], results["p_out"], "X_out", "P_out"),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
+
+    last_im = None
+
+    for ax, (title, x, p, xlabel, ylabel) in zip(axes, datasets):
+        x = np.asarray(x, dtype=float)
+        p = np.asarray(p, dtype=float)
+
+        if remove_mean:
+            x = x - np.mean(x)
+            p = p - np.mean(p)
+
+        values = np.vstack([x, p])
+
+        try:
+            kde = gaussian_kde(values)
+        except np.linalg.LinAlgError:
+            values = values + 1e-8 * np.random.normal(size=values.shape)
+            kde = gaussian_kde(values)
+
+        x_min, x_max = np.percentile(x, [0.5, 99.5])
+        p_min, p_max = np.percentile(p, [0.5, 99.5])
+
+        # évite extent nul si P_in est constant
+        if abs(x_max - x_min) < 1e-12:
+            x_min -= 1e-6
+            x_max += 1e-6
+        if abs(p_max - p_min) < 1e-12:
+            p_min -= 1e-6
+            p_max += 1e-6
+
+        X, P = np.meshgrid(
+            np.linspace(x_min, x_max, gridsize),
+            np.linspace(p_min, p_max, gridsize),
+        )
+
+        positions = np.vstack([X.ravel(), P.ravel()])
+        density = kde(positions).reshape(X.shape)
+        density /= np.max(density)
+
+        last_im = ax.imshow(
+            density,
+            origin="lower",
+            extent=[x_min, x_max, p_min, p_max],
+            aspect="auto",
+            cmap=cmap,
+            interpolation="bilinear",
+            vmin=0,
+            vmax=1,
+        )
+
+        ax.set_title(title, fontsize=20)
+        ax.set_xlabel(xlabel, fontsize=16)
+        ax.set_ylabel(ylabel, fontsize=16)
+
+    cbar = fig.colorbar(last_im, ax=axes, shrink=0.95, pad=0.02)
+    cbar.set_label("Normalized density", fontsize=14)
+
+    plt.show()
+
 # -----------------------------------------------------------------------------
 # Parameter sweeps
 # -----------------------------------------------------------------------------
@@ -1457,29 +1609,50 @@ def clone_config(base_cfg: FullConfig) -> FullConfig:
 def sweep_lo_phase(
     base_cfg: FullConfig,
     phases_rad: Array,
+    F_low: complex,
+    F_high: complex,
+    F_work: complex,
 ) -> Dict[str, Array]:
-    """Sweep the homodyne phase and record output quadrature variance/current power."""
+    """Sweep homodyne phase and record detected variance."""
+
     vals = []
+
     for theta in phases_rad:
         cfg = clone_config(base_cfg)
+
         cfg.detection.mode = "homodyne"
         cfg.detection.lo_phase_rad = float(theta)
 
-        res = run_simulation(cfg)
+        res = run_simulation_with_upper_branch(
+            cfg,
+            F_low=F_low,
+            F_high=F_high,
+            F_work=F_work,
+        )
+
         vals.append(np.var(res["i_det_t"]))
-    return {"phases_rad": np.asarray(phases_rad), "var_i_det": np.asarray(vals)}
+
+    return {
+        "phases_rad": np.asarray(phases_rad),
+        "var_i_det": np.asarray(vals),
+    }
 
 
 def sweep_noise_strength(
     base_cfg: FullConfig,
     strengths: Array,
+    F_low: complex,
+    F_high: complex,
+    F_work: complex,
     which: Literal["amplitude", "phase"] = "phase",
 ) -> Dict[str, Array]:
-    """Sweep noise level and record output PSD integrated over frequency."""
+    """Sweep noise level and record integrated output PSD."""
+
     integrated = []
+
     for s in strengths:
         cfg = clone_config(base_cfg)
-        
+
         if which == "phase":
             cfg.noise.mode = "phase"
             cfg.noise.strength_phase = float(s)
@@ -1488,11 +1661,125 @@ def sweep_noise_strength(
             cfg.noise.mode = "amplitude"
             cfg.noise.strength_amp = float(s)
             cfg.noise.strength_phase = 0.0
-        res = run_simulation(cfg)
+
+        res = run_simulation_with_upper_branch(
+            cfg,
+            F_low=F_low,
+            F_high=F_high,
+            F_work=F_work,
+        )
+
         f = res["freqs_det_mhz"]
         p = res["psd_det"]
+
         integrated.append(np.trapz(p, f))
-    return {"strengths": np.asarray(strengths), "integrated_psd": np.asarray(integrated)}
+
+    return {
+        "strengths": np.asarray(strengths),
+        "integrated_psd": np.asarray(integrated),
+    }
+
+
+def set_input_noise_gain(
+    cfg: FullConfig,
+    gain_dB_amp: Optional[float] = None,
+    gain_dB_phase: Optional[float] = None,
+) -> None:
+    """Met à jour les gains d'entrée ET les strength correspondantes."""
+    sigma_vac = cfg.detection.sigma_vac
+
+    if gain_dB_amp is not None:
+        cfg.noise.gain_dB_amp = float(gain_dB_amp)
+        cfg.noise.strength_amp = sigma_vac * 10 ** (cfg.noise.gain_dB_amp / 20.0)
+
+    if gain_dB_phase is not None:
+        cfg.noise.gain_dB_phase = float(gain_dB_phase)
+        cfg.noise.strength_phase = sigma_vac * 10 ** (cfg.noise.gain_dB_phase / 20.0)
+
+
+def sweep_input_amplitude_gain(
+    base_cfg: FullConfig,
+    gains_dB: Array,
+    F_low: complex,
+    F_high: complex,
+    F_work: complex,
+) -> Dict[str, Array]:
+    """
+    Fait varier le gain du bruit d'amplitude d'entrée.
+    Mesure les variances X_in, X_out, P_out et les gains de transfert.
+    """
+
+    var_xin = []
+    var_xout = []
+    var_pout = []
+
+    G_x_to_x = []
+    G_x_to_p = []
+
+    for g in gains_dB:
+        cfg = clone_config(base_cfg)
+
+        cfg.noise.mode = "amplitude"
+        cfg.noise.strength_phase = 0.0
+        set_input_noise_gain(cfg, gain_dB_amp=float(g))
+
+        res = run_simulation_with_upper_branch(
+            cfg,
+            F_low=F_low,
+            F_high=F_high,
+            F_work=F_work,
+        )
+
+        xin = res["x_in"] - np.mean(res["x_in"])
+        xout = res["x_out"] - np.mean(res["x_out"])
+        pout = res["p_out"] - np.mean(res["p_out"])
+
+        vx_in = np.var(xin)
+        vx_out = np.var(xout)
+        vp_out = np.var(pout)
+
+        var_xin.append(vx_in)
+        var_xout.append(vx_out)
+        var_pout.append(vp_out)
+
+        G_x_to_x.append(vx_out / vx_in)
+        G_x_to_p.append(vp_out / vx_in)
+
+    return {
+        "gains_dB": np.asarray(gains_dB),
+        "var_xin": np.asarray(var_xin),
+        "var_xout": np.asarray(var_xout),
+        "var_pout": np.asarray(var_pout),
+        "G_Xin_to_Xout": np.asarray(G_x_to_x),
+        "G_Xin_to_Pout": np.asarray(G_x_to_p),
+    }
+
+
+def plot_amplitude_gain_sweep(sweep: Dict[str, Array]) -> None:
+    """Trace les variances et les gains de transfert."""
+
+    plt.figure(figsize=(7, 5))
+    plt.plot(sweep["var_xin"], sweep["var_xout"], "o", ms=4, label=r"$X_{in} \to X_{out}$")
+    plt.plot(sweep["var_xin"], sweep["var_pout"], "o", ms=4, label=r"$X_{in} \to P_{out}$")
+    plt.xlabel(r"Var$(X_{in})$")
+    plt.ylabel("Output variance")
+    plt.title("Output noise versus input amplitude noise")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(7, 5))
+    plt.plot(sweep["gains_dB"], sweep["G_Xin_to_Xout"], "o", ms=4, label=r"$G_{X\to X}$")
+    plt.plot(sweep["gains_dB"], sweep["G_Xin_to_Pout"], "o", ms=4, label=r"$G_{X\to P}$")
+    plt.xlabel("Input amplitude noise gain dB")
+    plt.ylabel("Variance transfer gain")
+    plt.title("Transfer gain versus input noise gain")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
 
 
 # -----------------------------------------------------------------------------
@@ -1563,6 +1850,13 @@ def main() -> None:
         cfg,
         F_values,
     )
+    
+    bistab_results = {
+    "bistab_F_up": bistab["F_up"],
+    "bistab_density_up": bistab["density_up"],
+    "bistab_F_down": bistab["F_down"],
+    "bistab_density_down": bistab["density_down"],
+}
 
     plt.figure(figsize=(7, 5))
     plt.scatter(bistab["F_up"], bistab["density_up"], label="Sweep up", marker="x")
@@ -1579,16 +1873,45 @@ def main() -> None:
     # 2. Choose pump values from the bistability curve
     # -------------------------------------------------
 
-    F_low = 0.3 + 0j
-    F_high = 1.2 + 0j
-    F_work = 0.75 + 0j
+    pump = choose_pump_values_from_bistability(
+        cfg,
+        F_min=0.0,
+        F_max=2.0,
+        n_F=100,
+        alpha_work=0.9,
+    )
+
+    F_low = pump["F_low"]
+    F_high = pump["F_high"]
+    F_work = pump["F_work"]
+
+    print("Chosen pump values:")
+    print("F_low  =", F_low)
+    print("F_high =", F_high)
+    print("F_work =", F_work)
+    print("Bistable region:", pump["F_left"], "to", pump["F_right"])
 
     cfg.cavity.F_s = F_work
 
+    # -------------------------------------------------
+    # Sweep du gain du bruit d'amplitude d'entrée
+    # -------------------------------------------------
+
+    gains_dB = np.linspace(0, 30, 30)
+
+    amp_sweep = sweep_input_amplitude_gain(
+        base_cfg=cfg,
+        gains_dB=gains_dB,
+        F_low=F_low,
+        F_high=F_high,
+        F_work=F_work,
+    )
+
+    plot_amplitude_gain_sweep(amp_sweep)
 
 
     # -------------------------------------------------
-    # 3. Run noisy simulation on upper branch
+    # 4. Run noisy simulation on upper branch
     # -------------------------------------------------
 
     results = run_simulation_with_upper_branch(
@@ -1598,6 +1921,29 @@ def main() -> None:
         F_work=F_work,
     )
 
+
+    results.update(bistab_results)
+
+    results["F_low"] = np.array([F_low], dtype=np.complex128)
+    results["F_high"] = np.array([F_high], dtype=np.complex128)
+    results["F_work"] = np.array([F_work], dtype=np.complex128)
+
+    results["transfer_var_xin"] = amp_sweep["var_xin"]
+    results["transfer_var_xout"] = amp_sweep["var_xout"]
+    results["transfer_var_pout"] = amp_sweep["var_pout"]
+
+    results["transfer_gains_dB"] = amp_sweep["gains_dB"]
+    results["transfer_G_Xin_to_Xout"] = amp_sweep["G_Xin_to_Xout"]
+    results["transfer_G_Xin_to_Pout"] = amp_sweep["G_Xin_to_Pout"]
+
+    results.update({
+        "transfer_var_xin": amp_sweep["var_xin"],
+        "transfer_var_xout": amp_sweep["var_xout"],
+        "transfer_var_pout": amp_sweep["var_pout"],
+        "transfer_gains_dB": amp_sweep["gains_dB"],
+        "transfer_G_Xin_to_Xout": amp_sweep["G_Xin_to_Xout"],
+        "transfer_G_Xin_to_Pout": amp_sweep["G_Xin_to_Pout"],
+    })
 
 
     # Diagnostics
@@ -1613,13 +1959,14 @@ def main() -> None:
     # Plots
     plot_time_traces(results)
     plot_phase_space(results)
+    plot_kerneldensityestimation(results, remove_mean=False)
     plot_spectra(results, rbw_mhz=10, fmin_mhz=1e3/1e6, fmax_mhz=2000)
 
 
     # Save
     #save_results_npz("/Users/charlotte/Documents/Thermal-states/polariton_homodyne_results_balanced_both_6.npz", cfg, results)
-    save_results_npz("polariton_homodyne_results_balanced_both_7.npz", cfg, results)
-    print("\nSaved results to polariton_homodyne_results_balanced_both_7.npz")
+    save_results_npz("Results/polariton_homodyne_results_balanced_both_9.npz", cfg, results)
+    print("\nSaved results to Results/polariton_homodyne_results_balanced_both_9.npz")
 
 
 if __name__ == "__main__":
@@ -1628,7 +1975,13 @@ if __name__ == "__main__":
 # Can be added in the main function to sweep the LO phase and see the quadrature dependence of the detected noise.
 """if cfg.detection.mode == "homodyne":
         phases = np.linspace(0, 2 * np.pi, 25)
-        sweep = sweep_lo_phase(cfg, phases)
+        sweep = sweep_lo_phase(
+            cfg,
+            phases,
+            F_low=F_low,
+            F_high=F_high,
+            F_work=F_work,
+        )
         plt.figure(figsize=(7, 4))
         plt.plot(sweep["phases_rad"], sweep["var_i_det"], marker="o")
         plt.xlabel("LO phase θ (rad)")
