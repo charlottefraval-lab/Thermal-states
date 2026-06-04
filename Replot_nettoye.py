@@ -846,12 +846,12 @@ def plot_kerneldensityestimation(
     cbar = fig.colorbar(last_im, ax=axes, shrink=0.95, pad=0.02)
     cbar.set_label("Normalized density", fontsize=14)
 
-    return fig
+    return fig  
 
 def plot_output_noise_vs_input_noise(results: Dict[str, np.ndarray]) -> Optional[plt.Figure]:
 
     needed = [
-        "transfer_var_xin",
+        "transfer_var_input",
         "transfer_var_xout",
         "transfer_var_pout",
     ]
@@ -860,27 +860,43 @@ def plot_output_noise_vs_input_noise(results: Dict[str, np.ndarray]) -> Optional
         print("No transfer scan data found.")
         return None
 
+    mode = "amplitude"
+    if "transfer_noise_mode" in results:
+        mode = str(results["transfer_noise_mode"][0])
+
+    if mode == "phase":
+        input_label = r"$P_{in}$"
+        title = "Output noise versus input phase noise"
+
+    elif mode == "both":
+        input_label = r"$X_{in}+P_{in}$"
+        title = "Output noise versus input amplitude + phase noise"
+
+    else:
+        input_label = r"$X_{in}$"
+        title = "Output noise versus input amplitude noise"
+
     fig = plt.figure(figsize=(8, 5))
 
     plt.plot(
-        results["transfer_var_xin"],
+        results["transfer_var_input"],
         results["transfer_var_xout"],
         "o",
         ms=4,
-        label=r"$X_{in}\rightarrow X_{out}$"
+        label=rf"{input_label}$\rightarrow X_{{out}}$"
     )
 
     plt.plot(
-        results["transfer_var_xin"],
+        results["transfer_var_input"],
         results["transfer_var_pout"],
         "o",
         ms=4,
-        label=r"$X_{in}\rightarrow P_{out}$"
+        label=rf"{input_label}$\rightarrow P_{{out}}$"
     )
 
-    plt.xlabel(r"Var($X_{in}$)")
+    plt.xlabel(rf"Var({input_label})")
     plt.ylabel("Output variance")
-    plt.title("Output noise versus input amplitude noise")
+    plt.title(title)
     plt.grid(True, alpha=0.3)
     plt.legend()
 
@@ -892,30 +908,46 @@ def plot_transfer_gain(results: Dict[str, np.ndarray]) -> Optional[plt.Figure]:
 
     needed = [
         "transfer_gains_dB",
-        "transfer_G_Xin_to_Xout",
-        "transfer_G_Xin_to_Pout",
+        "transfer_G_to_Xout",
+        "transfer_G_to_Pout",
     ]
 
     if not all(k in results for k in needed):
         print("No transfer gain data found.")
         return None
 
+    mode = "amplitude"
+    if "transfer_noise_mode" in results:
+        mode = str(results["transfer_noise_mode"][0])
+
+    if mode == "phase":
+        gain_label = r"$G_{P\to}$"
+        title = "Transfer gain versus input phase noise"
+
+    elif mode == "both":
+        gain_label = r"$G_{XP\to}$"
+        title = "Transfer gain versus input amplitude + phase noise"
+
+    else:
+        gain_label = r"$G_{X\to}$"
+        title = "Transfer gain versus input amplitude noise"
+
     fig = plt.figure(figsize=(8, 5))
 
     plt.plot(
         results["transfer_gains_dB"],
-        results["transfer_G_Xin_to_Xout"],
+        results["transfer_G_to_Xout"],
         "o",
         ms=4,
-        label=r"$G_{X\to X}$"
+        label=rf"{gain_label}X_{{out}}$"
     )
 
     plt.plot(
         results["transfer_gains_dB"],
-        results["transfer_G_Xin_to_Pout"],
+        results["transfer_G_to_Pout"],
         "o",
         ms=4,
-        label=r"$G_{X\to P}$"
+        label=rf"{gain_label}P_{{out}}$"
     )
 
     plt.axvline(
@@ -925,9 +957,9 @@ def plot_transfer_gain(results: Dict[str, np.ndarray]) -> Optional[plt.Figure]:
         label="experiment: 5 dB"
     )
 
-    plt.xlabel("Input amplitude noise gain (dB)")
+    plt.xlabel("Input noise gain (dB)")
     plt.ylabel("Variance transfer gain")
-    plt.title("Transfer gain versus input noise gain")
+    plt.title(title)
     plt.grid(True, alpha=0.3)
     plt.legend()
 
@@ -951,14 +983,14 @@ def main() -> None:
     # -----------------------
     # CONFIG
     # -----------------------
-    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("Results/polariton_homodyne_results_balanced_both_10.npz")
+    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("Results/polariton_homodyne_results_balanced_both_13.npz")
     save_figures = True
-    output_dir = Path("Plots_balanced_both_10")
+    output_dir = Path("Plots_balanced_both_13")
 
     # Choose what to replot and how
     time_trace = False
-    quadratures_vs_time = False
-    phase_space = False
+    quadratures_vs_time = True
+    phase_space = True
     spectra = False
     cumulative = False
     psds = False
