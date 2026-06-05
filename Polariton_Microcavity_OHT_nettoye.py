@@ -120,7 +120,7 @@ class CavityConfig:
 @dataclass
 class SimulationConfig:
     """Global simulation parameters."""
-    duration_ps: float = 1.0e4      # total simulated time in ps -> resolution in MHz is ~ 1/duration_ps
+    duration_ps: float = 1.0e5      # total simulated time in ps -> resolution in MHz is ~ 1/duration_ps
     dt_ps: float = 1.0              # timestep; sampling rate = 1/dt
     discard_fraction: float = 0.1     # discard initial transient before PSD
     integrator: Literal["rk4", "heun", "euler"] = "rk4"
@@ -235,18 +235,6 @@ def complex_to_quadratures(z: ComplexArray) -> Tuple[Array, Array]:
     x = np.sqrt(2.0) * np.real(z)
     p = np.sqrt(2.0) * np.imag(z)
     return x, p
-
-def field_aligned_quadratures(z: ComplexArray) -> Tuple[Array, Array, float]:
-    z0 = np.mean(z)
-    phi = np.angle(z0)
-
-    z_rot = z * np.exp(-1j * phi)
-
-    x = np.sqrt(2.0) * np.real(z_rot)
-    p = np.sqrt(2.0) * np.imag(z_rot)
-
-    return x, p, phi
-
 
 def quadrature_projection(z: ComplexArray, theta: float) -> Array:
     """Return the slow quadrature X_theta = sqrt(2) Re[e^{-i theta} z]."""
@@ -882,7 +870,7 @@ def run_simulation_with_upper_branch(
     dt_ps = cfg.sim.dt_ps
     fs_mhz = 1.0 / (dt_ps) * MHZ_PER_INV_PS  # Convert to MHz
 
-    # Prepare upper branch
+    #Prepare upper branch
     psi_upper = prepare_upper_branch(
         cfg,
         F_low=F_low,
@@ -893,6 +881,8 @@ def run_simulation_with_upper_branch(
     # Use upper branch as initial condition
     cfg.cavity.psi0 = psi_upper
     cfg.cavity.F_s = F_work
+
+    rho_work = np.abs(psi_upper)**2
 
     # Generate noisy input drive around working point
     F_n, noise_aux = generate_drive_noise(t_full, cfg.noise)
@@ -1005,12 +995,6 @@ def run_simulation_with_upper_branch(
     x_cav, p_cav = complex_to_quadratures(results["psi_t"])
     x_out, p_out = complex_to_quadratures(results["s_out_t"])
 
-    #x_in, p_in = complex_to_quadratures(results["F_t"])
-    #x_cav, p_cav, phi_cav = field_aligned_quadratures(results["psi_t"])
-    #x_out, p_out, phi_out = field_aligned_quadratures(results["s_out_t"])
-
-    
-
     results.update({
         "x_in": x_in,
         "p_in": p_in,
@@ -1018,8 +1002,6 @@ def run_simulation_with_upper_branch(
         "p_cav": p_cav,
         "x_out": x_out,
         "p_out": p_out,
-        #"phi_cav": np.array([phi_cav]),
-        #"phi_out": np.array([phi_out]),
         "freqs_det_mhz": f_det,
         "psd_det": psd_det,
         "freqs_meas_mhz": f_meas,
@@ -1029,6 +1011,8 @@ def run_simulation_with_upper_branch(
         "freqs_wn_mhz": f_wn,
         "psd_wn": psd_wn,
         "fs_store_mhz": np.array([fs_store_mhz], dtype=np.float64),
+        "rho_work": np.array([rho_work]),
+        "F_work": np.array([F_work]),
     })
 
     return results
@@ -1057,30 +1041,30 @@ def plot_time_traces(results: Dict[str, np.ndarray], max_points: int = 5000) -> 
 
     fig, axes = plt.subplots(4, 1, figsize=(11, 12), sharex=True)
 
-    axes[0].plot(t[sl] * 1e6, results["amp_noise"][sl], label="Amplitude noise")
-    axes[0].plot(t[sl] * 1e6, results["phase_noise"][sl], label="Phase noise")
+    axes[0].plot(t[sl], results["amp_noise"][sl], label="Amplitude noise")
+    axes[0].plot(t[sl], results["phase_noise"][sl], label="Phase noise")
     axes[0].set_ylabel("Drive noise")
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(t[sl] * 1e6, np.real(results["F_t"][sl]), label="Re F(t)")
-    axes[1].plot(t[sl] * 1e6, np.imag(results["F_t"][sl]), label="Im F(t)")
+    axes[1].plot(t[sl], np.real(results["F_t"][sl]), label="Re F(t)")
+    axes[1].plot(t[sl], np.imag(results["F_t"][sl]), label="Im F(t)")
     axes[1].set_ylabel("Input drive")
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
-    axes[2].plot(t[sl] * 1e6, np.real(results["psi_t"][sl]), label="Re ψ(t)")
-    axes[2].plot(t[sl] * 1e6, np.imag(results["psi_t"][sl]), label="Im ψ(t)")
+    axes[2].plot(t[sl], np.real(results["psi_t"][sl]), label="Re ψ(t)")
+    axes[2].plot(t[sl], np.imag(results["psi_t"][sl]), label="Im ψ(t)")
     axes[2].set_ylabel("Intracavity field")
     axes[2].legend()
     axes[2].grid(True, alpha=0.3)
 
     if "i_plus_meas_t" in results:
-        axes[3].plot(t[sl] * 1e6, results["i_plus_meas_t"][sl], label="Sum current")
+        axes[3].plot(t[sl], results["i_plus_meas_t"][sl], label="Sum current")
     elif "i_minus_meas_t" in results:
-        axes[3].plot(t[sl] * 1e6, results["i_minus_meas_t"][sl], label="Difference current")
+        axes[3].plot(t[sl], results["i_minus_meas_t"][sl], label="Difference current")
     else:
-        axes[3].plot(t[sl] * 1e6, results["i_meas_t"][sl], label="Homodyne current")
+        axes[3].plot(t[sl], results["i_meas_t"][sl], label="Homodyne current")
 
     axes[3].set_ylabel("Photocurrent")
     axes[3].set_xlabel("Time (ps)")
@@ -1311,6 +1295,21 @@ def sweep_input_noise_gain(base_cfg, gains_dB, F_low, F_high, F_work, noise_mode
         G_to_x.append(vx_out / vin)
         G_to_p.append(vp_out / vin)
 
+        rho = np.mean(np.abs(res["psi_t"])**2)
+
+        print(
+            f"g={g:.1f} dB | "
+            f"rho={rho:.3f}"
+        )
+        print(
+            f"g={g:.1f} dB | "
+            f"vx_in={vx_in:.4e} | "
+            f"vp_in={vp_in:.4e} | "
+            f"vx_out={vx_out:.4e} | "
+            f"vp_out={vp_out:.4e} | "
+            f"Gx={vx_out/vin:.3e}"
+        )
+
     return {
         "noise_mode": noise_mode,
         "gains_dB": np.asarray(gains_dB),
@@ -1327,39 +1326,89 @@ def plot_input_noise_gain_sweep(sweep):
     mode = sweep["noise_mode"]
 
     if mode == "amplitude":
-        xs = [(sweep["var_xin"], r"Var($X_{in}$)", r"$X_{in}$")]
+        var_in = sweep["var_xin"]
+        input_label = r"$\mathrm{Var}(X_{\rm in})$"
+        transfer_label = r"$X_{\rm in}$"
     elif mode == "phase":
-        xs = [(sweep["var_pin"], r"Var($P_{in}$)", r"$P_{in}$")]
+        var_in = sweep["var_pin"]
+        input_label = r"$\mathrm{Var}(P_{\rm in})$"
+        transfer_label = r"$P_{\rm in}$"
     else:
-        xs = [
-            (sweep["var_xin"], r"Var($X_{in}$)", r"$X_{in}$"),
-            (sweep["var_pin"], r"Var($P_{in}$)", r"$P_{in}$"),
-        ]
+        var_in = sweep["var_input"]
+        input_label = r"$\mathrm{Var}(X_{\rm in})+\mathrm{Var}(P_{\rm in})$"
+        transfer_label = r"$X_{\rm in}+P_{\rm in}$"
 
-    fig, axes = plt.subplots(1, len(xs), figsize=(6 * len(xs), 5), sharey=True)
-    axes = np.atleast_1d(axes)
+    # -------------------------------------------------
+    # 1. Output variance versus input variance
+    # -------------------------------------------------
+    fig, ax = plt.subplots(figsize=(8, 5))
 
-    for ax, (x, xlabel, label_in) in zip(axes, xs):
-        ax.plot(x, sweep["var_xout"], "o", ms=4, label=rf"{label_in} $\to X_{{out}}$")
-        ax.plot(x, sweep["var_pout"], "o", ms=4, label=rf"{label_in} $\to P_{{out}}$")
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Output variance")
-        ax.set_title(rf"{label_in} input noise")
-        ax.grid(True)
-        ax.legend()
+    ax.plot(
+        var_in,
+        sweep["var_xout"],
+        "o",
+        ms=4,
+        label=rf"{transfer_label} $\rightarrow X_{{\rm out}}$",
+    )
 
+    ax.plot(
+        var_in,
+        sweep["var_pout"],
+        "o",
+        ms=4,
+        label=rf"{transfer_label} $\rightarrow P_{{\rm out}}$",
+    )
+
+    ax.set_xlabel(input_label)
+    ax.set_ylabel(r"$\mathrm{Var}(X_{\rm out})$")
+    ax.set_title("Output noise variance versus input noise variance")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=11)
     fig.tight_layout()
     plt.show()
 
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(sweep["gains_dB"], sweep["G_to_Xout"], "o", ms=4, label=r"$G_{\mathrm{in}\to X}$")
-    ax.plot(sweep["gains_dB"], sweep["G_to_Pout"], "o", ms=4, label=r"$G_{\mathrm{in}\to P}$")
-    ax.axvline(5, linestyle="--", alpha=0.7, label="experiment: 5 dB")
-    ax.set_xlabel("Input noise gain dB")
-    ax.set_ylabel("Variance transfer gain")
-    ax.set_title(f"Transfer gain versus {mode} noise gain")
-    ax.grid(True)
-    ax.legend()
+    # -------------------------------------------------
+    # 2. Transfer gain in dB versus injected noise gain
+    # -------------------------------------------------
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    eps = 1e-20
+
+    Gx_dB = 10 * np.log10(np.maximum(sweep["G_to_Xout"], eps))
+    Gp_dB = 10 * np.log10(np.maximum(sweep["G_to_Pout"], eps))
+
+    ax.plot(
+        sweep["gains_dB"],
+        Gx_dB,
+        "o",
+        ms=4,
+        label=r"$G_{X_{\rm out}}$",
+    )
+
+    ax.plot(
+        sweep["gains_dB"],
+        Gp_dB,
+        "o",
+        ms=4,
+        label=r"$G_{P_{\rm out}}$",
+    )
+
+    ax.axvline(
+        5,
+        linestyle="--",
+        color="gray",
+        alpha=0.7,
+        label="Experimental input noise = 5 dB",
+    )
+
+    ax.set_xlabel("Injected input noise gain (dB)")
+    ax.set_ylabel(
+        r"Transfer gain "
+        r"$10\log_{10}\left(\mathrm{Var(out)}/\mathrm{Var(in)}\right)$ (dB)"
+    )
+    ax.set_title("Quadrature noise transfer gain")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=11)
     fig.tight_layout()
     plt.show()
 
@@ -1445,7 +1494,7 @@ def main() -> None:
         F_min=0.0,
         F_max=2.0,
         n_F=100,
-        alpha_work=0.1,
+        alpha_work=0.2,
     )
 
     F_low = pump["F_low"]
@@ -1502,7 +1551,7 @@ def main() -> None:
         raise ValueError("Choose one noise mode.")
     
 
-    gains_dB = np.linspace(0, 30, 30)
+    gains_dB = np.linspace(0, 25, 30)
 
     noise_sweep = sweep_input_noise_gain(
         base_cfg=cfg,
@@ -1593,8 +1642,8 @@ def main() -> None:
 
     # Save
     #save_results_npz("/Users/charlotte/Documents/Thermal-states/polariton_homodyne_results_balanced_both_6.npz", cfg, results)
-    save_results_npz("Results/polariton_homodyne_results_balanced_both_13.npz", cfg, results)
-    print("\nSaved results to Results/polariton_homodyne_results_balanced_both_13.npz")
+    save_results_npz("Results/polariton_homodyne_results_balanced_test.npz", cfg, results)
+    print("\nSaved results to Results/polariton_homodyne_results_balanced_test.npz")
 
 
 if __name__ == "__main__":
