@@ -757,15 +757,7 @@ def plot_bistability(results: Dict[str, np.ndarray]) -> Optional[plt.Figure]:
         else:
             rho_work = np.nan
 
-    plt.scatter(
-        [F_work],
-        [rho_work],
-        s=60,
-        color="red",
-        label="Working point",
-        zorder=5,
-    )
-
+    plt.scatter([F_work], [rho_work], s=60, color="red", label="Working point", zorder=5)
     plt.xlabel("Pump amplitude F")
     plt.ylabel(r"Intracavity density $|\psi|^2$")
     plt.title("Polariton bistability")
@@ -923,8 +915,10 @@ def plot_transfer_gain(
 
     needed = [
         "transfer_gains_dB",
-        "transfer_G_to_Xout",
-        "transfer_G_to_Pout",
+        "transfer_Gxx",
+        "transfer_Gpp",
+        "transfer_Gxp",
+        "transfer_Gpx"
     ]
 
     if not all(k in results for k in needed):
@@ -933,59 +927,23 @@ def plot_transfer_gain(
 
     eps = 1e-20
 
-    Gx_dB = 10 * np.log10(
-        np.maximum(
-            results["transfer_G_to_Xout"],
-            eps
-        )
-    )
-
-    Gp_dB = 10 * np.log10(
-        np.maximum(
-            results["transfer_G_to_Pout"],
-            eps
-        )
-    )
+    Gxx = results["transfer_Gxx"]
+    Gpp = results["transfer_Gpp"]
+    Gxp = results["transfer_Gxp"]
+    Gpx = results["transfer_Gpx"]
 
     fig = plt.figure(figsize=(8, 5))
 
-    plt.plot(
-        results["transfer_gains_dB"],
-        Gx_dB,
-        "o",
-        ms=4,
-        label=r"$G_{X_{\rm out}}$",
-    )
-
-    plt.plot(
-        results["transfer_gains_dB"],
-        Gp_dB,
-        "o",
-        ms=4,
-        label=r"$G_{P_{\rm out}}$",
-    )
-
-    plt.axvline(
-        5,
-        linestyle="--",
-        color="gray",
-        alpha=0.7,
-        label="Experimental input noise = 5 dB",
-    )
-
-    plt.xlabel(
-        "Injected input noise gain (dB)"
-    )
-
+    plt.plot(results["transfer_gains_dB"], Gxx, "o", ms=4, label=r"$G_{XX}$")
+    plt.plot(results["transfer_gains_dB"], Gpp, "o", ms=4, label=r"$G_{PP}$")
+    plt.plot(results["transfer_gains_dB"], Gxp, "o", ms=4, label=r"$G_{XP}$")
+    plt.plot(results["transfer_gains_dB"], Gpx, "o", ms=4, label=r"$G_{PX}$")
+    
+    plt.axvline(5, linestyle="--", color="gray", alpha=0.7, label="Experimental input noise = 5 dB")
+    plt.xlabel("Injected input noise gain (dB)")
     plt.ylabel(
         r"Transfer gain "
-        r"$10\log_{10}"
-        r"\left("
-        r"\mathrm{Var(out)}"
-        r"/"
-        r"\mathrm{Var(in)}"
-        r"\right)$ "
-        r"(dB)"
+        r"$G_{ij} = \sigma_i^{out}/\sigma_j^{in}$"
     )
 
     plt.title(
@@ -995,6 +953,49 @@ def plot_transfer_gain(
 
     plt.grid(True, alpha=0.3)
     plt.legend(fontsize=11)
+
+    fig.tight_layout()
+    return fig
+
+def plot_g_transfer_gain(results):
+
+    needed = [
+        "g_sweep_g_values",
+        "g_sweep_Gxx",
+        "g_sweep_Gpp",
+        "g_sweep_Gxp",
+        "g_sweep_Gpx",
+    ]
+
+    if not all(k in results for k in needed):
+        print("No g sweep data found.")
+        return None
+
+    eps = 1e-20
+
+    g = results["g_sweep_g_values"]
+
+    Gxx = 10 * np.log10(np.maximum(results["g_sweep_Gxx"], eps))
+    Gpp = 10 * np.log10(np.maximum(results["g_sweep_Gpp"], eps))
+    Gxp = 10 * np.log10(np.maximum(results["g_sweep_Gxp"], eps))
+    Gpx = 10 * np.log10(np.maximum(results["g_sweep_Gpx"], eps))
+
+    fig = plt.figure(figsize=(8, 5))
+
+    plt.plot(g, Gxx, "o", ms=4, label=r"$G_{XX}$")
+    #plt.plot(g, Gpp, "o", ms=4, label=r"$G_{PP}$")
+    #plt.plot(g, Gxp, "o", ms=4, label=r"$G_{XP}$")
+    plt.plot(g, Gpx, "o", ms=4, label=r"$G_{PX}$")
+
+    plt.xlabel(r"Nonlinearity $g$")
+    plt.ylabel(
+        r"$10\log_{10}(\mathrm{Var(out)}/\mathrm{Var(in)})$ (dB)"
+    )
+
+    plt.title("Quadrature noise transfer versus nonlinearity")
+
+    plt.grid(True, alpha=0.3)
+    plt.legend()
 
     fig.tight_layout()
     return fig
@@ -1016,9 +1017,9 @@ def main() -> None:
     # -----------------------
     # CONFIG
     # -----------------------
-    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("Results/polariton_homodyne_results_balanced_amp_alpha=0_8_vac=0_005.npz")
+    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("Results/polariton_homodyne_sweep_test.npz")
     save_figures = True
-    output_dir = Path("Plots/Plots_balanced_amp_alpha=0_8_vac=0_005")
+    output_dir = Path("Plots/sweep_test")
 
     # Choose what to replot and how
     time_trace = True
@@ -1030,8 +1031,9 @@ def main() -> None:
     lo_sweep = False
     bistability = True
     kde_plot = True
-    transfer_noise = True
-    transfer_gain = True
+    transfer_noise = False
+    transfer_gain = False
+    g_transfer = True
 
     # spectrum display choices
     fmin_mhz = 1e-3
@@ -1109,6 +1111,11 @@ def main() -> None:
         fig_transfer_gain = plot_transfer_gain(results)
         if fig_transfer_gain is not None:
             figs["transfer_gain.png"] = fig_transfer_gain
+
+    if g_transfer:
+        fig_g_transfer = plot_g_transfer_gain(results)
+        if fig_g_transfer is not None:
+            figs["g_transfer_gain.png"] = fig_g_transfer
 
 
     balanced_psd_fig = plot_all_balanced_psds(results, rbw_mhz=rbw_mhz, fmin_mhz=fmin_mhz, fmax_mhz=fmax_mhz, loglog=loglog)

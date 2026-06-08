@@ -790,11 +790,11 @@ def prepare_upper_branch(
 def choose_pump_values_from_bistability(
     cfg: FullConfig,
     F_min: float = 0.0,
-    F_max: float = 2.0,
+    F_max: float = 10,
     n_F: int = 120,
-    alpha_work: float = 0.9,
+    alpha_work: float = 0.5,
     alpha_low: float = 0.2,
-    alpha_high: float = 1.2,
+    alpha_high: float = 1.5,
     threshold_fraction: float = 0.05,
 ):
     """
@@ -1032,196 +1032,6 @@ def estimate_quadrature_variances(z: ComplexArray) -> Dict[str, float]:
         "mean_p": float(np.mean(p)),
     }
 
-
-def plot_time_traces(results: Dict[str, np.ndarray], max_points: int = 5000) -> None:
-    t = results["t_ps"]
-    n = t.size
-    step = max(1, n // max_points)
-    sl = slice(None, None, step)
-
-    fig, axes = plt.subplots(4, 1, figsize=(11, 12), sharex=True)
-
-    axes[0].plot(t[sl], results["amp_noise"][sl], label="Amplitude noise")
-    axes[0].plot(t[sl], results["phase_noise"][sl], label="Phase noise")
-    axes[0].set_ylabel("Drive noise")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].plot(t[sl], np.real(results["F_t"][sl]), label="Re F(t)")
-    axes[1].plot(t[sl], np.imag(results["F_t"][sl]), label="Im F(t)")
-    axes[1].set_ylabel("Input drive")
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-
-    axes[2].plot(t[sl], np.real(results["psi_t"][sl]), label="Re ψ(t)")
-    axes[2].plot(t[sl], np.imag(results["psi_t"][sl]), label="Im ψ(t)")
-    axes[2].set_ylabel("Intracavity field")
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
-
-    if "i_plus_meas_t" in results:
-        axes[3].plot(t[sl], results["i_plus_meas_t"][sl], label="Sum current")
-    elif "i_minus_meas_t" in results:
-        axes[3].plot(t[sl], results["i_minus_meas_t"][sl], label="Difference current")
-    else:
-        axes[3].plot(t[sl], results["i_meas_t"][sl], label="Homodyne current")
-
-    axes[3].set_ylabel("Photocurrent")
-    axes[3].set_xlabel("Time (ps)")
-    axes[3].legend()
-    axes[3].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_phase_space(results: Dict[str, np.ndarray], max_points: int = 50000) -> None:
-    x_in, p_in = results["x_in"], results["p_in"]
-    x_cav, p_cav = results["x_cav"], results["p_cav"]
-    x_out, p_out = results["x_out"], results["p_out"]
-
-    n = x_in.size
-    step = max(1, n // max_points)
-    sl = slice(None, None, step)
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-
-    axes[0].scatter(x_in[sl], p_in[sl], s=2, alpha=0.2)
-    axes[0].set_title("Input drive quadratures")
-    axes[0].set_xlabel("X_in")
-    axes[0].set_ylabel("P_in")
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].scatter(x_cav[sl], p_cav[sl], s=2, alpha=0.2)
-    axes[1].set_title("Intracavity field quadratures")
-    axes[1].set_xlabel("X_cav")
-    axes[1].set_ylabel("P_cav")
-    axes[1].grid(True, alpha=0.3)
-
-    axes[2].scatter(x_out[sl], p_out[sl], s=2, alpha=0.2)
-    axes[2].set_title("Output field quadratures")
-    axes[2].set_xlabel("X_out")
-    axes[2].set_ylabel("P_out")
-    axes[2].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_spectra(
-    results: Dict[str, np.ndarray],
-    rbw_mhz: float = 0.0,
-    fmin_mhz: Optional[float] = None,
-    fmax_mhz: Optional[float] = None,
-    loglog: bool = False,
-) -> None:
-    f1 = results["freqs_det_mhz"]
-    p1 = results["psd_det"]
-    f2 = results["freqs_meas_mhz"]
-    p2 = results["psd_meas"]
-
-    if rbw_mhz > 0:
-        f1, p1 = rbw_average_psd(f1, p1, rbw_mhz)
-        f2, p2 = rbw_average_psd(f2, p2, rbw_mhz)
-
-    mask1 = np.ones_like(f1, dtype=bool)
-    mask2 = np.ones_like(f2, dtype=bool)
-    if fmin_mhz is not None:
-        mask1 &= (f1 >= fmin_mhz)
-        mask2 &= (f2 >= fmin_mhz)
-    if fmax_mhz is not None:
-        mask1 &= (f1 <= fmax_mhz)
-        mask2 &= (f2 <= fmax_mhz)
-
-    plt.figure(figsize=(10, 6))
-    if loglog:
-        plt.loglog(f1[mask1], p1[mask1], label="Deterministic homodyne PSD")
-        plt.loglog(f2[mask2], p2[mask2], label="Measured PSD (with shot noise)")
-    else:
-        plt.semilogy(f1[mask1], p1[mask1], label="Deterministic homodyne PSD")
-        plt.semilogy(f2[mask2], p2[mask2], label="Measured PSD (with shot noise)")
-    plt.xlabel("Analysis frequency (MHz)")
-    plt.ylabel("PSD (current units$^2$/MHz)")
-    plt.title("Spectrum analyzer trace after balanced homodyne detection")
-    plt.grid(True, which="both", alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-def plot_kerneldensityestimation(
-    results,
-    gridsize=300,
-    cmap="twilight_shifted",
-    remove_mean=True,
-):
-    from scipy.stats import gaussian_kde
-
-    datasets = [
-        ("Input", results["x_in"], results["p_in"], "X_in", "P_in"),
-        ("Intracavity", results["x_cav"], results["p_cav"], "X_cav", "P_cav"),
-        ("Output", results["x_out"], results["p_out"], "X_out", "P_out"),
-    ]
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
-
-    last_im = None
-
-    for ax, (title, x, p, xlabel, ylabel) in zip(axes, datasets):
-        x = np.asarray(x, dtype=float)
-        p = np.asarray(p, dtype=float)
-
-        if remove_mean:
-            x = x - np.mean(x)
-            p = p - np.mean(p)
-
-        values = np.vstack([x, p])
-
-        try:
-            kde = gaussian_kde(values)
-        except np.linalg.LinAlgError:
-            values = values + 1e-8 * np.random.normal(size=values.shape)
-            kde = gaussian_kde(values)
-
-        x_min, x_max = np.percentile(x, [0.5, 99.5])
-        p_min, p_max = np.percentile(p, [0.5, 99.5])
-
-        # évite extent nul si P_in est constant
-        if abs(x_max - x_min) < 1e-12:
-            x_min -= 1e-6
-            x_max += 1e-6
-        if abs(p_max - p_min) < 1e-12:
-            p_min -= 1e-6
-            p_max += 1e-6
-
-        X, P = np.meshgrid(
-            np.linspace(x_min, x_max, gridsize),
-            np.linspace(p_min, p_max, gridsize),
-        )
-
-        positions = np.vstack([X.ravel(), P.ravel()])
-        density = kde(positions).reshape(X.shape)
-        density /= np.max(density)
-
-        last_im = ax.imshow(
-            density,
-            origin="lower",
-            extent=[x_min, x_max, p_min, p_max],
-            aspect="auto",
-            cmap=cmap,
-            interpolation="bilinear",
-            vmin=0,
-            vmax=1,
-        )
-
-        ax.set_title(title, fontsize=20)
-        ax.set_xlabel(xlabel, fontsize=16)
-        ax.set_ylabel(ylabel, fontsize=16)
-
-    cbar = fig.colorbar(last_im, ax=axes, shrink=0.95, pad=0.02)
-    cbar.set_label("Normalized density", fontsize=14)
-
-    plt.show()
-
 # -----------------------------------------------------------------------------
 # Parameter sweeps
 # -----------------------------------------------------------------------------
@@ -1257,7 +1067,7 @@ def set_input_noise_gain(
 def sweep_input_noise_gain(base_cfg, gains_dB, F_low, F_high, F_work, noise_mode):
     var_xin, var_pin = [], []
     var_xout, var_pout = [], []
-    G_to_x, G_to_p = [], []
+    Gxx, Gxp, Gpx, Gpp = [], [], [], []
 
     for g in gains_dB:
         cfg = clone_config(base_cfg)
@@ -1286,14 +1096,14 @@ def sweep_input_noise_gain(base_cfg, gains_dB, F_low, F_high, F_work, noise_mode
         vx_out = np.var(xout)
         vp_out = np.var(pout)
 
-        vin = vx_in if noise_mode == "amplitude" else vp_in if noise_mode == "phase" else vx_in + vp_in
-
         var_xin.append(vx_in)
         var_pin.append(vp_in)
         var_xout.append(vx_out)
         var_pout.append(vp_out)
-        G_to_x.append(vx_out / vin)
-        G_to_p.append(vp_out / vin)
+        Gxx.append(vx_out / vx_in if vx_in != 0 else 0)
+        Gpx.append(vp_out / vx_in if vx_in != 0 else 0)
+        Gxp.append(vx_out / vp_in if vp_in != 0 else 0)
+        Gpp.append(vp_out / vp_in if vp_in != 0 else 0)
 
         rho = np.mean(np.abs(res["psi_t"])**2)
 
@@ -1307,7 +1117,10 @@ def sweep_input_noise_gain(base_cfg, gains_dB, F_low, F_high, F_work, noise_mode
             f"vp_in={vp_in:.4e} | "
             f"vx_out={vx_out:.4e} | "
             f"vp_out={vp_out:.4e} | "
-            f"Gx={vx_out/vin:.3e}"
+            f"Gxx={Gxx[-1]:.3e} | "
+            f"Gpp={Gpp[-1]:.3e} | "
+            f"Gxp={Gxp[-1]:.3e} | "
+            f"Gpx={Gpx[-1]:.3e}"
         )
 
     return {
@@ -1318,8 +1131,10 @@ def sweep_input_noise_gain(base_cfg, gains_dB, F_low, F_high, F_work, noise_mode
         "var_input": np.asarray(var_xin) + np.asarray(var_pin),
         "var_xout": np.asarray(var_xout),
         "var_pout": np.asarray(var_pout),
-        "G_to_Xout": np.asarray(G_to_x),
-        "G_to_Pout": np.asarray(G_to_p),
+        "Gxx": np.asarray(Gxx),
+        "Gxp": np.asarray(Gxp),
+        "Gpx": np.asarray(Gpx),
+        "Gpp": np.asarray(Gpp),
     }
 
 def plot_input_noise_gain_sweep(sweep):
@@ -1343,21 +1158,9 @@ def plot_input_noise_gain_sweep(sweep):
     # -------------------------------------------------
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    ax.plot(
-        var_in,
-        sweep["var_xout"],
-        "o",
-        ms=4,
-        label=rf"{transfer_label} $\rightarrow X_{{\rm out}}$",
-    )
+    ax.plot(var_in, sweep["var_xout"], "o", ms=4, label=rf"{transfer_label} $\rightarrow X_{{\rm out}}$")
 
-    ax.plot(
-        var_in,
-        sweep["var_pout"],
-        "o",
-        ms=4,
-        label=rf"{transfer_label} $\rightarrow P_{{\rm out}}$",
-    )
+    ax.plot(var_in, sweep["var_pout"], "o", ms=4, label=rf"{transfer_label} $\rightarrow P_{{\rm out}}$")
 
     ax.set_xlabel(input_label)
     ax.set_ylabel(r"$\mathrm{Var}(X_{\rm out})$")
@@ -1374,32 +1177,19 @@ def plot_input_noise_gain_sweep(sweep):
 
     eps = 1e-20
 
-    Gx_dB = 10 * np.log10(np.maximum(sweep["G_to_Xout"], eps))
-    Gp_dB = 10 * np.log10(np.maximum(sweep["G_to_Pout"], eps))
+    Gxx_dB = 10 * np.log10(np.maximum(sweep["Gxx"], eps))
+    Gpp_dB = 10 * np.log10(np.maximum(sweep["Gpp"], eps))
+    Gxp_dB = 10 * np.log10(np.maximum(sweep["Gxp"], eps))
+    Gpx_dB = 10 * np.log10(np.maximum(sweep["Gpx"], eps))   
 
-    ax.plot(
-        sweep["gains_dB"],
-        Gx_dB,
-        "o",
-        ms=4,
-        label=r"$G_{X_{\rm out}}$",
-    )
 
-    ax.plot(
-        sweep["gains_dB"],
-        Gp_dB,
-        "o",
-        ms=4,
-        label=r"$G_{P_{\rm out}}$",
-    )
+    ax.plot(sweep["gains_dB"], Gxx_dB, "o", ms=4, label=r"$G_{xx}$")
+    ax.plot(sweep["gains_dB"], Gpp_dB, "o", ms=4, label=r"$G_{pp}$")
+    ax.plot(sweep["gains_dB"], Gxp_dB, "o", ms=4, label=r"$G_{xp}$")
+    ax.plot(sweep["gains_dB"], Gpx_dB, "o", ms=4, label=r"$G_{px}$")
 
-    ax.axvline(
-        5,
-        linestyle="--",
-        color="gray",
-        alpha=0.7,
-        label="Experimental input noise = 5 dB",
-    )
+
+    ax.axvline(5, linestyle="--", color="gray", alpha=0.7, label="Experimental input noise = 5 dB")
 
     ax.set_xlabel("Injected input noise gain (dB)")
     ax.set_ylabel(
@@ -1409,6 +1199,160 @@ def plot_input_noise_gain_sweep(sweep):
     ax.set_title("Quadrature noise transfer gain")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=11)
+    fig.tight_layout()
+    plt.show()
+
+def sweep_g(base_cfg, g_values, noise_mode):
+    var_xin, var_pin = [], []
+    var_xout, var_pout = [], []
+    Gxx, Gxp, Gpx, Gpp = [], [], [], []
+
+    rho_work = []
+    F_left_list = []
+    F_right_list = []
+    F_work_list = []
+
+    for g in g_values:
+        cfg = clone_config(base_cfg)
+
+        # convert physical g -> model U
+        cfg.cavity.nonlinearity_inv_ps = g / HBAR_MEV_PS
+        cfg.noise.mode = noise_mode
+
+        # fixed input noise = 5 dB
+        if noise_mode == "amplitude":
+            cfg.noise.strength_phase = 0.0
+            set_input_noise_gain(cfg, gain_dB_amp=5)
+
+        elif noise_mode == "phase":
+            cfg.noise.strength_amp = 0.0
+            set_input_noise_gain(cfg, gain_dB_phase=5)
+
+        elif noise_mode == "both":
+            set_input_noise_gain(
+                cfg,
+                gain_dB_amp=5,
+                gain_dB_phase=5,
+            )
+
+        # recompute bistability for THIS g
+        pump = choose_pump_values_from_bistability(
+            cfg,
+            F_min=0.0,
+            F_max=3.0,
+            n_F=100,
+            alpha_work=0.5,
+        )
+
+        F_low = pump["F_low"]
+        F_high = pump["F_high"]
+        F_work = pump["F_work"]
+
+        # run simulation
+        res = run_simulation_with_upper_branch(
+            cfg,
+            F_low=F_low,
+            F_high=F_high,
+            F_work=F_work,
+        )
+
+        xin = res["x_in"] - np.mean(res["x_in"])
+        pin = res["p_in"] - np.mean(res["p_in"])
+
+        xout = res["x_out"] - np.mean(res["x_out"])
+        pout = res["p_out"] - np.mean(res["p_out"])
+
+        vx_in = np.var(xin)
+        vp_in = np.var(pin)
+
+        vx_out = np.var(xout)
+        vp_out = np.var(pout)
+
+        var_xin.append(vx_in)
+        var_pin.append(vp_in)
+
+        var_xout.append(vx_out)
+        var_pout.append(vp_out)
+
+        Gxx.append(vx_out / vx_in if vx_in != 0 else 0)
+        Gpx.append(vp_out / vx_in if vx_in != 0 else 0)
+        Gxp.append(vx_out / vp_in if vp_in != 0 else 0)
+        Gpp.append(vp_out / vp_in if vp_in != 0 else 0)
+
+        rho_work.append(float(res["rho_work"][0]))
+
+        F_left_list.append(np.real(pump["F_left"]))
+        F_right_list.append(np.real(pump["F_right"]))
+        F_work_list.append(np.real(F_work))
+
+        print(
+            f"g={g:.4e} | "
+            f"rho={rho_work[-1]:.3f} | "
+            f"Gxx={Gxx[-1]:.3e} | "
+            f"Gpp={Gpp[-1]:.3e}"
+        )
+        
+        F_vals = pump["bistab"]["F_up"]
+        rho_low_curve = pump["bistab"]["density_up"]
+        rho_high_curve = pump["bistab"]["density_down"][::-1]
+
+        idx = np.argmin(np.abs(F_vals - np.real(F_work)))
+
+        rho_low = rho_low_curve[idx]
+        rho_high = rho_high_curve[idx]
+        rho = float(res["rho_work"][0])
+
+        print(
+            f"g={g:.4e} | "
+            f"rho={rho:.3f} | "
+            f"rho_low={rho_low:.3f} | "
+            f"rho_high={rho_high:.3f}"
+        )
+
+    return {
+        "g_values": np.asarray(g_values),
+
+        "rho_work": np.asarray(rho_work),
+        "F_left": np.asarray(F_left_list),
+        "F_right": np.asarray(F_right_list),
+        "F_work": np.asarray(F_work_list),
+
+        "var_xin": np.asarray(var_xin),
+        "var_pin": np.asarray(var_pin),
+        "var_xout": np.asarray(var_xout),
+        "var_pout": np.asarray(var_pout),
+
+        "Gxx": np.asarray(Gxx),
+        "Gxp": np.asarray(Gxp),
+        "Gpx": np.asarray(Gpx),
+        "Gpp": np.asarray(Gpp),
+    }
+
+def plot_g_sweep(g_sweep):
+    eps = 1e-20
+
+    g = g_sweep["g_values"]
+
+    Gxx_dB = 10 * np.log10(np.maximum(g_sweep["Gxx"], eps))
+    Gpp_dB = 10 * np.log10(np.maximum(g_sweep["Gpp"], eps))
+    Gxp_dB = 10 * np.log10(np.maximum(g_sweep["Gxp"], eps))
+    Gpx_dB = 10 * np.log10(np.maximum(g_sweep["Gpx"], eps))
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    ax.plot(g, Gxx_dB, "o-", ms=4, label=r"$G_{XX}$")
+    ax.plot(g, Gpp_dB, "o-", ms=4, label=r"$G_{PP}$")
+    ax.plot(g, Gxp_dB, "o-", ms=4, label=r"$G_{XP}$")
+    ax.plot(g, Gpx_dB, "o-", ms=4, label=r"$G_{PX}$")
+
+    ax.set_xlabel(r"Nonlinearity $g$")
+    ax.set_ylabel(
+        r"$10\log_{10}(\mathrm{Var(out)}/\mathrm{Var(in)})$ (dB)"
+    )
+    ax.set_title("Noise transfer versus nonlinearity")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
     fig.tight_layout()
     plt.show()
 
@@ -1492,9 +1436,9 @@ def main() -> None:
     pump = choose_pump_values_from_bistability(
         cfg,
         F_min=0.0,
-        F_max=2.0,
+        F_max=10,
         n_F=100,
-        alpha_work=0.8,
+        alpha_work=0.5,
     )
 
     F_low = pump["F_low"]
@@ -1550,19 +1494,42 @@ def main() -> None:
     else:
         raise ValueError("Choose one noise mode.")
     
+    RUN_NOISE_GAIN_SWEEP = False
 
-    gains_dB = np.linspace(0, 25, 30)
+    if RUN_NOISE_GAIN_SWEEP:
 
-    noise_sweep = sweep_input_noise_gain(
-        base_cfg=cfg,
-        gains_dB=gains_dB,
-        F_low=F_low,
-        F_high=F_high,
-        F_work=F_work,
-        noise_mode=noise_mode,
-    )
+        gains_dB = np.linspace(0, 25, 15)
 
-    plot_input_noise_gain_sweep(noise_sweep)
+        noise_sweep = sweep_input_noise_gain(
+            base_cfg=cfg,
+            gains_dB=gains_dB,
+            F_low=F_low,
+            F_high=F_high,
+            F_work=F_work,
+            noise_mode=noise_mode,
+        )
+
+        plot_input_noise_gain_sweep(noise_sweep)
+    
+
+    # -------------------------------------------------
+    # Sweep de la non linéarité
+    # -------------------------------------------------
+    RUN_G_SWEEP = True
+
+    if RUN_G_SWEEP:
+
+        g0 = 1.2e-2
+
+        g_values = g0 * np.linspace(0.02, 1, 30)
+
+        g_sweep = sweep_g(
+            base_cfg=cfg,
+            g_values=g_values,
+            noise_mode=noise_mode,
+        )
+
+        plot_g_sweep(g_sweep)
 
 
     # -------------------------------------------------
@@ -1610,17 +1577,40 @@ def main() -> None:
     results["F_work"] = np.array([F_work], dtype=np.complex128)
 
 
-    results.update({
-        "transfer_noise_mode": np.array([noise_mode]),
-        "transfer_var_input": noise_sweep["var_input"],
-        "transfer_var_xin": noise_sweep["var_xin"],
-        "transfer_var_pin": noise_sweep["var_pin"],
-        "transfer_var_xout": noise_sweep["var_xout"],
-        "transfer_var_pout": noise_sweep["var_pout"],
-        "transfer_gains_dB": noise_sweep["gains_dB"],
-        "transfer_G_to_Xout": noise_sweep["G_to_Xout"],
-        "transfer_G_to_Pout": noise_sweep["G_to_Pout"],
-    })
+    if RUN_NOISE_GAIN_SWEEP:
+        results.update({
+            "transfer_noise_mode": np.array([noise_mode]),
+            "transfer_var_input": noise_sweep["var_input"],
+            "transfer_var_xin": noise_sweep["var_xin"],
+            "transfer_var_pin": noise_sweep["var_pin"],
+            "transfer_var_xout": noise_sweep["var_xout"],
+            "transfer_var_pout": noise_sweep["var_pout"],
+            "transfer_gains_dB": noise_sweep["gains_dB"],
+            "transfer_Gxx": noise_sweep["Gxx"],
+            "transfer_Gpp": noise_sweep["Gpp"],
+            "transfer_Gxp": noise_sweep["Gxp"],
+            "transfer_Gpx": noise_sweep["Gpx"],
+        })
+
+    if RUN_G_SWEEP:
+        results.update({
+            "g_sweep_g_values": g_sweep["g_values"],
+
+            "g_sweep_rho_work": g_sweep["rho_work"],
+            "g_sweep_F_left": g_sweep["F_left"],
+            "g_sweep_F_right": g_sweep["F_right"],
+            "g_sweep_F_work": g_sweep["F_work"],
+
+            "g_sweep_Gxx": g_sweep["Gxx"],
+            "g_sweep_Gpp": g_sweep["Gpp"],
+            "g_sweep_Gxp": g_sweep["Gxp"],
+            "g_sweep_Gpx": g_sweep["Gpx"],
+
+            "g_sweep_var_xin": g_sweep["var_xin"],
+            "g_sweep_var_pin": g_sweep["var_pin"],
+            "g_sweep_var_xout": g_sweep["var_xout"],
+            "g_sweep_var_pout": g_sweep["var_pout"],
+        })
 
 
     # Diagnostics
@@ -1633,17 +1623,11 @@ def main() -> None:
     for k, v in output_stats.items():
         print(f"  {k:>10s} = {v:.6g}")
 
-    # Plots
-    plot_time_traces(results)
-    plot_phase_space(results)
-    plot_kerneldensityestimation(results, remove_mean=True)
-    plot_spectra(results, rbw_mhz=10, fmin_mhz=1e3/1e6, fmax_mhz=2000)
-
 
     # Save
     #save_results_npz("/Users/charlotte/Documents/Thermal-states/polariton_homodyne_results_balanced_both_6.npz", cfg, results)
-    save_results_npz("Results/polariton_homodyne_results_balanced_amp_alpha=0_8_vac=0_005.npz", cfg, results)
-    print("\nSaved results to Results/polariton_homodyne_results_balanced_amp_alpha=0_8_vac=0_005.npz")
+    save_results_npz("Results/polariton_homodyne_sweep_test.npz", cfg, results)
+    print("\nSaved results to Results/polariton_homodyne_sweep_test.npz")
 
 
 if __name__ == "__main__":
