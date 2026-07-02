@@ -344,8 +344,8 @@ dpsi = psi_noisy - psi_clean
 print("max |dpsi| =", np.max(np.abs(dpsi)))
 
 plt.figure()
-plt.plot(t, np.real(psi_noisy), label="Re(δψ)")
-plt.plot(t, np.imag(psi_noisy), label="Im(δψ)")
+plt.plot(t, np.real(psi_noisy), label="Re(ψ)")
+plt.plot(t, np.imag(psi_noisy), label="Im(ψ)")
 plt.xlabel("Time (ps)")
 plt.ylabel("ψ noisy")
 plt.legend()

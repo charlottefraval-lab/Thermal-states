@@ -72,6 +72,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numpy.typing import NDArray
 from scipy.stats import gaussian_kde
+from matplotlib.ticker import MultipleLocator
 
 # SciPy is convenient for Welch PSD. If unavailable, a fallback FFT-based PSD is provided.
 try:
@@ -109,7 +110,7 @@ class CavityConfig:
 
     All dynamical coefficients are in units of ps^-1. To convert from meV, use ħ = 0.658 meV*ps.
     """
-    detuning_inv_ps: float = 1.4e-1 / HBAR_MEV_PS   # Δ = δ_meV / ħ
+    detuning_inv_ps: float = 5.6e-2 / HBAR_MEV_PS   # Δ = δ_meV / ħ
     nonlinearity_inv_ps: float =  1.2e-2 / HBAR_MEV_PS  # U = g_meV_um2 / ħ
     loss_inv_ps: float = 7e-2 / HBAR_MEV_PS       # γ
     kappa_out_inv_ps: float = 7e-2 / HBAR_MEV_PS  # output coupling used in input-output relation
@@ -188,7 +189,7 @@ class NoiseConfig:
         RNG seed for reproducibility.
     """
     mode: NoiseMode = "amplitude"
-    cutoff_mhz: float = 100.0  # MHz
+    cutoff_mhz: float = 500.0  # MHz
     gain_dB_amp: float = 5.0
     gain_dB_phase: float = 5.0
     strength_amp: float =  DetectionConfig.sigma_vac*10**(gain_dB_amp/20) # DetectionConfig.sigma_vac*np.sqrt((10 ** (gain_dB_amp / 10.0) - 1))
@@ -749,146 +750,25 @@ def make_square_cycle_drive(
     return F_t
 
 
-def prepare_upper_branch(
-    cfg: FullConfig,
-    F_low: complex,
-    F_high: complex,
-    F_work: complex,
-) -> complex:
-    """Prepare the cavity field on the upper bistable branch."""
-
-    t_prep = time_axis(cfg.sim.duration_ps, cfg.sim.dt_ps)
-
-    F_prep_t = make_square_cycle_drive(
-        t=t_prep,
-        F_low=F_low,
-        F_high=F_high,
-        F_work=F_work,
-        t_rise_ps=0.2 * cfg.sim.duration_ps,
-        t_fall_ps=0.7 * cfg.sim.duration_ps,
-    )
-
-    old_psi0 = cfg.cavity.psi0
-    cfg.cavity.psi0 = 0.0 + 0.0j
-
-    psi_prep_t = integrate_cavity(
-        t=t_prep,
-        F_t=F_prep_t,
-        cfg=cfg.cavity,
-        integrator=cfg.sim.integrator,
-    )
-
-    cfg.cavity.psi0 = old_psi0
-
-    psi_upper = psi_prep_t[-1]
-
-    print("Prepared upper-branch density:", np.abs(psi_upper) ** 2)
-
-    return psi_upper
-
-
-def choose_pump_values_from_bistability(
-    cfg: FullConfig,
-    F_min: float = 0.0,
-    F_max: float = 2.0,
-    n_F: int = 120,
-    alpha_work: float = 0.9,
-    alpha_low: float = 0.2,
-    alpha_high: float = 1.2,
-    threshold_fraction: float = 0.05,
-):
-    """
-    Choisit automatiquement F_low, F_high, F_work à partir
-    de la courbe de bistabilité pour le g courant.
-
-    alpha_work:
-        position relative dans la zone bistable.
-        0 = bord gauche, 1 = bord droit.
-
-    alpha_low:
-        F_low = alpha_low * F_left
-
-    alpha_high:
-        F_high = alpha_high * F_right
-    """
-
-    F_values = np.linspace(F_min, F_max, n_F)
-
-    bistab = compute_bistability_curve(
-        cfg,
-        F_values,
-    )
-
-    density_up = bistab["density_up"]
-    density_down = bistab["density_down"][::-1]
-
-    diff = np.abs(density_up - density_down)
-
-    threshold = threshold_fraction * np.max(diff)
-
-    bistable_indices = np.where(diff > threshold)[0]
-
-    if bistable_indices.size == 0:
-        raise RuntimeError(
-            "No bistable region found. Try increasing F_max "
-            "or lowering threshold_fraction."
-        )
-
-    i_left = bistable_indices[0]
-    i_right = bistable_indices[-1]
-
-    F_left = F_values[i_left]
-    F_right = F_values[i_right]
-
-    F_work = F_left + alpha_work * (F_right - F_left)
-
-    F_low = alpha_low * F_left
-    F_high = alpha_high * F_right
-
-    return {
-        "F_low": F_low + 0j,
-        "F_high": F_high + 0j,
-        "F_work": F_work + 0j,
-        "F_left": F_left,
-        "F_right": F_right,
-        "bistab": bistab,
-    }
 
 # -----------------------------------------------------------------------------
 # High-level simulation pipeline
 # -----------------------------------------------------------------------------
 
-#def run_simulation(cfg: FullConfig) -> Dict[str, np.ndarray]:
-def run_simulation_with_upper_branch(
+def run_simulation_simple(
     cfg: FullConfig,
-    F_low: complex,
-    F_high: complex,
     F_work: complex,
 ) -> Dict[str, np.ndarray]:
-    """Run the full pipeline from noisy optical drive to homodyne PSD."""
+
     t_full = time_axis(cfg.sim.duration_ps, cfg.sim.dt_ps)
     dt_ps = cfg.sim.dt_ps
-    fs_mhz = 1.0 / (dt_ps) * MHZ_PER_INV_PS  # Convert to MHz
+    fs_mhz = 1.0 / dt_ps * MHZ_PER_INV_PS
 
-    #Prepare upper branch
-    psi_upper = prepare_upper_branch(
-        cfg,
-        F_low=F_low,
-        F_high=F_high,
-        F_work=F_work,
-    )
-
-    # Use upper branch as initial condition
-    cfg.cavity.psi0 = psi_upper
     cfg.cavity.F_s = F_work
 
-    rho_work = np.abs(psi_upper)**2
-
-    # Generate noisy input drive around working point
     F_n, noise_aux = generate_drive_noise(t_full, cfg.noise)
     F_t = cfg.cavity.F_s + F_n
 
-    # Integrate noisy dynamics from upper branch
     psi_t = integrate_cavity(
         t_full,
         F_t,
@@ -896,21 +776,19 @@ def run_simulation_with_upper_branch(
         integrator=cfg.sim.integrator,
     )
 
-    # Reference without added noise, also from upper branch
     psi_t_wn = integrate_cavity(
         t_full,
-        np.full(t_full.size, cfg.cavity.F_s),
+        np.full(t_full.size, cfg.cavity.F_s, dtype=np.complex128),
         cfg.cavity,
         integrator=cfg.sim.integrator,
     )
-        
-    # Compute output field
+
     s_out_t = output_field(F_t, psi_t, cfg.cavity)
     s_out_without_noise_t = output_field(cfg.cavity.F_s, psi_t_wn, cfg.cavity)
 
     rng = np.random.default_rng(cfg.noise.seed + 999)
 
-    results: Dict[str, np.ndarray] = {
+    results = {
         "t_ps": t_full,
         "F_t": F_t,
         "psi_t": psi_t,
@@ -920,77 +798,59 @@ def run_simulation_with_upper_branch(
         "phase_noise": noise_aux["phase_noise"],
     }
 
-    # Choosed detection scheme
-    if cfg.detection.mode == "homodyne":
-        return("Code not implemented yet for homodyne detection. Please choose balanced_sum or balanced_diff.")
+    det = balanced_direct_detection_currents(
+        s_out_t=s_out_t,
+        cfg=cfg.detection,
+        rng=rng,
+        dt_ps=dt_ps,
+    )
+    results.update(det)
 
-    elif cfg.detection.mode in ("balanced_sum", "balanced_diff"):
-        det = balanced_direct_detection_currents(
-            s_out_t=s_out_t,
-            cfg=cfg.detection,
-            rng=rng,
-            dt_ps=dt_ps,
-        )
-        results.update(det)
+    det_without_noise = balanced_direct_detection_currents_without_noise(
+        s_out_without_noise_t=s_out_without_noise_t,
+        cfg=cfg.detection,
+        rng=rng,
+        dt_ps=dt_ps,
+    )
+    results.update(det_without_noise)
 
-        det_without_noise = balanced_direct_detection_currents_without_noise(
-            s_out_without_noise_t=s_out_without_noise_t,
-            cfg=cfg.detection,
-            rng=rng,
-            dt_ps=dt_ps,
-        )
-        results.update(det_without_noise)
+    ref = balanced_current_for_drive_noise(
+        F_t=F_t,
+        cfg=cfg.detection,
+        rng=rng,
+        dt_ps=dt_ps,
+    )
+    results.update(ref)
 
-        ref = balanced_current_for_drive_noise(
-            F_t=F_t,
-            cfg=cfg.detection,
-            rng=rng,
-            dt_ps=dt_ps,
-        )
+    if cfg.detection.mode == "balanced_sum":
+        results["i_det_t"] = det["i_plus_det_t"]
+        results["i_meas_t"] = det["i_plus_meas_t"]
+        results["i_ref_t"] = ref["i_plus_det_ref_t"]
+        results["i_det_without_noise_t"] = det_without_noise["i_plus_det_t_wn"]
 
-        results.update(ref)
+    elif cfg.detection.mode == "balanced_diff":
+        results["i_det_t"] = det["i_minus_det_t"]
+        results["i_meas_t"] = det["i_minus_meas_t"]
+        results["i_ref_t"] = ref["i_minus_det_ref_t"]
+        results["i_det_without_noise_t"] = det_without_noise["i_minus_det_t_wn"]
 
-        if cfg.detection.mode == "balanced_sum":
-            signal_for_psd_det = det["i_plus_det_t"]
-            signal_for_psd_meas = det["i_plus_meas_t"]
-            signal_for_psd_ref = ref["i_plus_det_ref_t"]
-            signal_for_psd_det_without_noise = det_without_noise["i_plus_det_t_wn"]
-        else:
-            signal_for_psd_det = det["i_minus_det_t"]
-            signal_for_psd_meas = det["i_minus_meas_t"]
-            signal_for_psd_ref = ref["i_minus_det_ref_t"]
-            signal_for_psd_det_without_noise = det_without_noise["i_minus_det_t_wn"]
-        
-        results["i_det_t"] = signal_for_psd_det
-        results["i_meas_t"] = signal_for_psd_meas
-        results["i_ref_t"] = signal_for_psd_ref
-        results["i_det_without_noise_t"] = signal_for_psd_det_without_noise
-  
     else:
-        raise ValueError(f"Unknown detection mode: {cfg.detection.mode}")
+        raise ValueError("Use balanced_sum or balanced_diff for now.")
 
-    # Discard transient and optionally downsample stored arrays
     n0 = int(cfg.sim.discard_fraction * t_full.size)
     step = max(1, cfg.sim.store_every)
 
     for k in list(results.keys()):
-        results[k] = results[k][n0::step]
         if isinstance(results[k], np.ndarray) and results[k].shape == t_full.shape:
             results[k] = results[k][n0::step]
 
     fs_store_mhz = fs_mhz / step
 
-    # PSDs for the spectrum analyzer trace
     f_det, psd_det = compute_psd(results["i_det_t"], fs_store_mhz, cfg.spectrum)
     f_meas, psd_meas = compute_psd(results["i_meas_t"], fs_store_mhz, cfg.spectrum)
-
-    # PSDs for the drive noise alone (for diagnostics)
     f_drive, psd_drive = compute_psd(results["i_ref_t"], fs_store_mhz, cfg.spectrum)
-
-    # PSDs for the spectrum reference (without noise)
     f_wn, psd_wn = compute_psd(results["i_det_without_noise_t"], fs_store_mhz, cfg.spectrum)
 
-    # Also compute cavity/output quadratures for diagnostics
     x_in, p_in = complex_to_quadratures(results["F_t"])
     x_cav, p_cav = complex_to_quadratures(results["psi_t"])
     x_out, p_out = complex_to_quadratures(results["s_out_t"])
@@ -1002,6 +862,7 @@ def run_simulation_with_upper_branch(
         "p_cav": p_cav,
         "x_out": x_out,
         "p_out": p_out,
+
         "freqs_det_mhz": f_det,
         "psd_det": psd_det,
         "freqs_meas_mhz": f_meas,
@@ -1010,9 +871,10 @@ def run_simulation_with_upper_branch(
         "psd_drive": psd_drive,
         "freqs_wn_mhz": f_wn,
         "psd_wn": psd_wn,
-        "fs_store_mhz": np.array([fs_store_mhz], dtype=np.float64),
-        "rho_work": np.array([rho_work]),
-        "F_work": np.array([F_work]),
+
+        "fs_store_mhz": np.array([fs_store_mhz]),
+        "F_work": np.array([F_work], dtype=np.complex128),
+        "rho_work": np.array([np.mean(np.abs(results["psi_t"])**2)]),
     })
 
     return results
@@ -1031,196 +893,6 @@ def estimate_quadrature_variances(z: ComplexArray) -> Dict[str, float]:
         "mean_x": float(np.mean(x)),
         "mean_p": float(np.mean(p)),
     }
-
-
-def plot_time_traces(results: Dict[str, np.ndarray], max_points: int = 5000) -> None:
-    t = results["t_ps"]
-    n = t.size
-    step = max(1, n // max_points)
-    sl = slice(None, None, step)
-
-    fig, axes = plt.subplots(4, 1, figsize=(11, 12), sharex=True)
-
-    axes[0].plot(t[sl], results["amp_noise"][sl], label="Amplitude noise")
-    axes[0].plot(t[sl], results["phase_noise"][sl], label="Phase noise")
-    axes[0].set_ylabel("Drive noise")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].plot(t[sl], np.real(results["F_t"][sl]), label="Re F(t)")
-    axes[1].plot(t[sl], np.imag(results["F_t"][sl]), label="Im F(t)")
-    axes[1].set_ylabel("Input drive")
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-
-    axes[2].plot(t[sl], np.real(results["psi_t"][sl]), label="Re ψ(t)")
-    axes[2].plot(t[sl], np.imag(results["psi_t"][sl]), label="Im ψ(t)")
-    axes[2].set_ylabel("Intracavity field")
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
-
-    if "i_plus_meas_t" in results:
-        axes[3].plot(t[sl], results["i_plus_meas_t"][sl], label="Sum current")
-    elif "i_minus_meas_t" in results:
-        axes[3].plot(t[sl], results["i_minus_meas_t"][sl], label="Difference current")
-    else:
-        axes[3].plot(t[sl], results["i_meas_t"][sl], label="Homodyne current")
-
-    axes[3].set_ylabel("Photocurrent")
-    axes[3].set_xlabel("Time (ps)")
-    axes[3].legend()
-    axes[3].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_phase_space(results: Dict[str, np.ndarray], max_points: int = 50000) -> None:
-    x_in, p_in = results["x_in"], results["p_in"]
-    x_cav, p_cav = results["x_cav"], results["p_cav"]
-    x_out, p_out = results["x_out"], results["p_out"]
-
-    n = x_in.size
-    step = max(1, n // max_points)
-    sl = slice(None, None, step)
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-
-    axes[0].scatter(x_in[sl], p_in[sl], s=2, alpha=0.2)
-    axes[0].set_title("Input drive quadratures")
-    axes[0].set_xlabel("X_in")
-    axes[0].set_ylabel("P_in")
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].scatter(x_cav[sl], p_cav[sl], s=2, alpha=0.2)
-    axes[1].set_title("Intracavity field quadratures")
-    axes[1].set_xlabel("X_cav")
-    axes[1].set_ylabel("P_cav")
-    axes[1].grid(True, alpha=0.3)
-
-    axes[2].scatter(x_out[sl], p_out[sl], s=2, alpha=0.2)
-    axes[2].set_title("Output field quadratures")
-    axes[2].set_xlabel("X_out")
-    axes[2].set_ylabel("P_out")
-    axes[2].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_spectra(
-    results: Dict[str, np.ndarray],
-    rbw_mhz: float = 0.0,
-    fmin_mhz: Optional[float] = None,
-    fmax_mhz: Optional[float] = None,
-    loglog: bool = False,
-) -> None:
-    f1 = results["freqs_det_mhz"]
-    p1 = results["psd_det"]
-    f2 = results["freqs_meas_mhz"]
-    p2 = results["psd_meas"]
-
-    if rbw_mhz > 0:
-        f1, p1 = rbw_average_psd(f1, p1, rbw_mhz)
-        f2, p2 = rbw_average_psd(f2, p2, rbw_mhz)
-
-    mask1 = np.ones_like(f1, dtype=bool)
-    mask2 = np.ones_like(f2, dtype=bool)
-    if fmin_mhz is not None:
-        mask1 &= (f1 >= fmin_mhz)
-        mask2 &= (f2 >= fmin_mhz)
-    if fmax_mhz is not None:
-        mask1 &= (f1 <= fmax_mhz)
-        mask2 &= (f2 <= fmax_mhz)
-
-    plt.figure(figsize=(10, 6))
-    if loglog:
-        plt.loglog(f1[mask1], p1[mask1], label="Deterministic homodyne PSD")
-        plt.loglog(f2[mask2], p2[mask2], label="Measured PSD (with shot noise)")
-    else:
-        plt.semilogy(f1[mask1], p1[mask1], label="Deterministic homodyne PSD")
-        plt.semilogy(f2[mask2], p2[mask2], label="Measured PSD (with shot noise)")
-    plt.xlabel("Analysis frequency (MHz)")
-    plt.ylabel("PSD (current units$^2$/MHz)")
-    plt.title("Spectrum analyzer trace after balanced homodyne detection")
-    plt.grid(True, which="both", alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-def plot_kerneldensityestimation(
-    results,
-    gridsize=300,
-    cmap="twilight_shifted",
-    remove_mean=True,
-):
-    from scipy.stats import gaussian_kde
-
-    datasets = [
-        ("Input", results["x_in"], results["p_in"], "X_in", "P_in"),
-        ("Intracavity", results["x_cav"], results["p_cav"], "X_cav", "P_cav"),
-        ("Output", results["x_out"], results["p_out"], "X_out", "P_out"),
-    ]
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
-
-    last_im = None
-
-    for ax, (title, x, p, xlabel, ylabel) in zip(axes, datasets):
-        x = np.asarray(x, dtype=float)
-        p = np.asarray(p, dtype=float)
-
-        if remove_mean:
-            x = x - np.mean(x)
-            p = p - np.mean(p)
-
-        values = np.vstack([x, p])
-
-        try:
-            kde = gaussian_kde(values)
-        except np.linalg.LinAlgError:
-            values = values + 1e-8 * np.random.normal(size=values.shape)
-            kde = gaussian_kde(values)
-
-        x_min, x_max = np.percentile(x, [0.5, 99.5])
-        p_min, p_max = np.percentile(p, [0.5, 99.5])
-
-        # évite extent nul si P_in est constant
-        if abs(x_max - x_min) < 1e-12:
-            x_min -= 1e-6
-            x_max += 1e-6
-        if abs(p_max - p_min) < 1e-12:
-            p_min -= 1e-6
-            p_max += 1e-6
-
-        X, P = np.meshgrid(
-            np.linspace(x_min, x_max, gridsize),
-            np.linspace(p_min, p_max, gridsize),
-        )
-
-        positions = np.vstack([X.ravel(), P.ravel()])
-        density = kde(positions).reshape(X.shape)
-        density /= np.max(density)
-
-        last_im = ax.imshow(
-            density,
-            origin="lower",
-            extent=[x_min, x_max, p_min, p_max],
-            aspect="auto",
-            cmap=cmap,
-            interpolation="bilinear",
-            vmin=0,
-            vmax=1,
-        )
-
-        ax.set_title(title, fontsize=20)
-        ax.set_xlabel(xlabel, fontsize=16)
-        ax.set_ylabel(ylabel, fontsize=16)
-
-    cbar = fig.colorbar(last_im, ax=axes, shrink=0.95, pad=0.02)
-    cbar.set_label("Normalized density", fontsize=14)
-
-    plt.show()
 
 # -----------------------------------------------------------------------------
 # Parameter sweeps
@@ -1254,27 +926,53 @@ def set_input_noise_gain(
         cfg.noise.strength_phase = sigma_vac * 10 ** (cfg.noise.gain_dB_phase / 20.0)
 
 
-def sweep_input_noise_gain(base_cfg, gains_dB, F_low, F_high, F_work, noise_mode):
+def sweep_input_noise_gain_simple(
+    base_cfg,
+    gains_dB,
+    F_work,
+    noise_mode,
+):
+    var_input = []
     var_xin, var_pin = [], []
     var_xout, var_pout = [], []
-    G_to_x, G_to_p = [], []
+    Gxx, Gxp, Gpx, Gpp = [], [], [], []
 
-    for g in gains_dB:
+    for gain_dB in gains_dB:
         cfg = clone_config(base_cfg)
+
+        cfg.cavity.F_s = F_work
         cfg.noise.mode = noise_mode
 
         if noise_mode == "amplitude":
             cfg.noise.strength_phase = 0.0
-            set_input_noise_gain(cfg, gain_dB_amp=float(g))
+            set_input_noise_gain(cfg, gain_dB_amp=gain_dB)
         elif noise_mode == "phase":
             cfg.noise.strength_amp = 0.0
-            set_input_noise_gain(cfg, gain_dB_phase=float(g))
+            set_input_noise_gain(cfg, gain_dB_phase=gain_dB)
         elif noise_mode == "both":
-            set_input_noise_gain(cfg, gain_dB_amp=float(g), gain_dB_phase=float(g))
-        else:
-            raise ValueError(f"Unknown noise_mode: {noise_mode}")
+            set_input_noise_gain(
+                cfg,
+                gain_dB_amp=gain_dB,
+                gain_dB_phase=gain_dB,
+            )
 
-        res = run_simulation_with_upper_branch(cfg, F_low, F_high, F_work)
+        # prepare steady state at F_work
+        t_settle = time_axis(5e4, cfg.sim.dt_ps)
+        F_settle_t = np.full(t_settle.shape, F_work, dtype=np.complex128)
+
+        psi_settle_t = integrate_cavity(
+            t_settle,
+            F_settle_t,
+            cfg.cavity,
+            integrator=cfg.sim.integrator,
+        )
+
+        cfg.cavity.psi0 = psi_settle_t[-1]
+
+        res = run_simulation_simple(
+            cfg,
+            F_work=F_work,
+        )
 
         xin = res["x_in"] - np.mean(res["x_in"])
         pin = res["p_in"] - np.mean(res["p_in"])
@@ -1286,40 +984,44 @@ def sweep_input_noise_gain(base_cfg, gains_dB, F_low, F_high, F_work, noise_mode
         vx_out = np.var(xout)
         vp_out = np.var(pout)
 
-        vin = vx_in if noise_mode == "amplitude" else vp_in if noise_mode == "phase" else vx_in + vp_in
-
         var_xin.append(vx_in)
         var_pin.append(vp_in)
         var_xout.append(vx_out)
         var_pout.append(vp_out)
-        G_to_x.append(vx_out / vin)
-        G_to_p.append(vp_out / vin)
 
-        rho = np.mean(np.abs(res["psi_t"])**2)
+        if noise_mode == "amplitude":
+            var_input.append(vx_in)
+        elif noise_mode == "phase":
+            var_input.append(vp_in)
+        else:
+            var_input.append(vx_in + vp_in)
+
+        Gxx.append(vx_out / vx_in if vx_in != 0 else 0)
+        Gpx.append(vp_out / vx_in if vx_in != 0 else 0)
+        Gxp.append(vx_out / vp_in if vp_in != 0 else 0)
+        Gpp.append(vp_out / vp_in if vp_in != 0 else 0)
 
         print(
-            f"g={g:.1f} dB | "
-            f"rho={rho:.3f}"
-        )
-        print(
-            f"g={g:.1f} dB | "
-            f"vx_in={vx_in:.4e} | "
-            f"vp_in={vp_in:.4e} | "
-            f"vx_out={vx_out:.4e} | "
-            f"vp_out={vp_out:.4e} | "
-            f"Gx={vx_out/vin:.3e}"
+            f"gain={gain_dB:.2f} dB | "
+            f"var_in={var_input[-1]:.3e} | "
+            f"Gxx={Gxx[-1]:.3e} | "
+            f"Gpx={Gpx[-1]:.3e}"
         )
 
     return {
         "noise_mode": noise_mode,
         "gains_dB": np.asarray(gains_dB),
+        "var_input": np.asarray(var_input),
+
         "var_xin": np.asarray(var_xin),
         "var_pin": np.asarray(var_pin),
-        "var_input": np.asarray(var_xin) + np.asarray(var_pin),
         "var_xout": np.asarray(var_xout),
         "var_pout": np.asarray(var_pout),
-        "G_to_Xout": np.asarray(G_to_x),
-        "G_to_Pout": np.asarray(G_to_p),
+
+        "Gxx": np.asarray(Gxx),
+        "Gxp": np.asarray(Gxp),
+        "Gpx": np.asarray(Gpx),
+        "Gpp": np.asarray(Gpp),
     }
 
 def plot_input_noise_gain_sweep(sweep):
@@ -1343,21 +1045,9 @@ def plot_input_noise_gain_sweep(sweep):
     # -------------------------------------------------
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    ax.plot(
-        var_in,
-        sweep["var_xout"],
-        "o",
-        ms=4,
-        label=rf"{transfer_label} $\rightarrow X_{{\rm out}}$",
-    )
+    ax.plot(var_in, sweep["var_xout"], "o", ms=4, label=rf"{transfer_label} $\rightarrow X_{{\rm out}}$")
 
-    ax.plot(
-        var_in,
-        sweep["var_pout"],
-        "o",
-        ms=4,
-        label=rf"{transfer_label} $\rightarrow P_{{\rm out}}$",
-    )
+    ax.plot(var_in, sweep["var_pout"], "o", ms=4, label=rf"{transfer_label} $\rightarrow P_{{\rm out}}$")
 
     ax.set_xlabel(input_label)
     ax.set_ylabel(r"$\mathrm{Var}(X_{\rm out})$")
@@ -1374,32 +1064,19 @@ def plot_input_noise_gain_sweep(sweep):
 
     eps = 1e-20
 
-    Gx_dB = 10 * np.log10(np.maximum(sweep["G_to_Xout"], eps))
-    Gp_dB = 10 * np.log10(np.maximum(sweep["G_to_Pout"], eps))
+    Gxx_dB = 10 * np.log10(np.maximum(sweep["Gxx"], eps))
+    Gpp_dB = 10 * np.log10(np.maximum(sweep["Gpp"], eps))
+    Gxp_dB = 10 * np.log10(np.maximum(sweep["Gxp"], eps))
+    Gpx_dB = 10 * np.log10(np.maximum(sweep["Gpx"], eps))   
 
-    ax.plot(
-        sweep["gains_dB"],
-        Gx_dB,
-        "o",
-        ms=4,
-        label=r"$G_{X_{\rm out}}$",
-    )
 
-    ax.plot(
-        sweep["gains_dB"],
-        Gp_dB,
-        "o",
-        ms=4,
-        label=r"$G_{P_{\rm out}}$",
-    )
+    ax.plot(sweep["gains_dB"], Gxx_dB, "o", ms=4, label=r"$G_{xx}$")
+    ax.plot(sweep["gains_dB"], Gpp_dB, "o", ms=4, label=r"$G_{pp}$")
+    ax.plot(sweep["gains_dB"], Gxp_dB, "o", ms=4, label=r"$G_{xp}$")
+    ax.plot(sweep["gains_dB"], Gpx_dB, "o", ms=4, label=r"$G_{px}$")
 
-    ax.axvline(
-        5,
-        linestyle="--",
-        color="gray",
-        alpha=0.7,
-        label="Experimental input noise = 5 dB",
-    )
+
+    ax.axvline(5, linestyle="--", color="gray", alpha=0.7, label="Experimental input noise = 5 dB")
 
     ax.set_xlabel("Injected input noise gain (dB)")
     ax.set_ylabel(
@@ -1412,6 +1089,18 @@ def plot_input_noise_gain_sweep(sweep):
     fig.tight_layout()
     plt.show()
 
+def print_amplitude_drive_excursion(results):
+    F_real = np.real(results["F_t"])
+
+    F_mean = np.mean(F_real)
+    F_std = np.std(F_real)
+
+    print("\n=== Amplitude drive excursion ===")
+    print(f"mean(F) = {F_mean:.6f}")
+    print(f"std(F)  = {F_std:.6f}")
+    print(f"mean ± σ  : [{F_mean - F_std:.6f}, {F_mean + F_std:.6f}]")
+    print(f"mean ± 2σ : [{F_mean - 2*F_std:.6f}, {F_mean + 2*F_std:.6f}]")
+    print(f"mean ± 3σ : [{F_mean - 3*F_std:.6f}, {F_mean + 3*F_std:.6f}]")
 
 # -----------------------------------------------------------------------------
 # Saving and loading
@@ -1453,7 +1142,6 @@ def save_results_npz(path: str, cfg: FullConfig, results: Dict[str, np.ndarray])
 # -----------------------------------------------------------------------------
 # Example main program
 # -----------------------------------------------------------------------------
-
 def main() -> None:
     cfg = FullConfig()
 
@@ -1469,13 +1157,11 @@ def main() -> None:
     # Optional stationary electronics foor
     cfg.detection.electronic_noise_psd_per_mhz = 0.0  # Add a fixed electronic noise floor to the measured current PSD (in current units^2/MHz)
 
-    #results = run_simulation(cfg)
-
     # -------------------------------------------------
-    # 1. Plot bistability curve
+    # 1. Plot response curve
     # -------------------------------------------------
 
-    F_values = np.linspace(0.0, 3.0, 100)
+    F_values = np.linspace(0.2, 0.5, 100)
 
     bistab = compute_bistability_curve(
         cfg,
@@ -1483,40 +1169,28 @@ def main() -> None:
     )
     
     bistab_results = {
-    "bistab_F_up": bistab["F_up"],
-    "bistab_density_up": bistab["density_up"],
-    "bistab_F_down": bistab["F_down"],
-    "bistab_density_down": bistab["density_down"],
-}
+        "bistab_F_up": bistab["F_up"],
+        "bistab_density_up": bistab["density_up"],
+        "bistab_F_down": bistab["F_down"],
+        "bistab_density_down": bistab["density_down"],
+    }
 
-    pump = choose_pump_values_from_bistability(
-        cfg,
-        F_min=0.0,
-        F_max=2.0,
-        n_F=100,
-        alpha_work=0.8,
-    )
+    # Manual working point chosen from the steep nonlinear region
+    F_work = 0.328 + 0j
 
-    F_low = pump["F_low"]
-    F_high = pump["F_high"]
-    F_work = pump["F_work"]
+    idx = np.argmin(np.abs(bistab["F_up"] - np.real(F_work)))
+    rho_work = bistab["density_up"][idx]
 
-    print("Chosen pump values:")
-    print("F_low  =", F_low)
-    print("F_high =", F_high)
+    print("Manual working point:")
     print("F_work =", F_work)
-    print("Bistable region:", pump["F_left"], "to", pump["F_right"])
+    print("rho_work estimate =", rho_work)
 
     cfg.cavity.F_s = F_work
-
-    psi_upper = prepare_upper_branch(cfg, F_low, F_high, F_work)
 
     plt.figure(figsize=(7, 5))
     plt.scatter(bistab["F_up"], bistab["density_up"], label="Sweep up", marker="x")
     plt.scatter(bistab["F_down"], bistab["density_down"], label="Sweep down", marker="+")
     
-    rho_work = np.abs(psi_upper)**2
-
     plt.scatter(
         [np.real(F_work)],
         [rho_work],
@@ -1528,7 +1202,11 @@ def main() -> None:
    
     plt.xlabel("Pump amplitude F")
     plt.ylabel(r"Intracavity density $|\psi|^2$")
-    plt.title("Polariton bistability")
+    plt.title("Polariton response")
+
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(MultipleLocator(0.02))   
+
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
@@ -1537,9 +1215,9 @@ def main() -> None:
     # -------------------------------------------------
     # Sweep du gain du bruit d'amplitude d'entrée
     # -------------------------------------------------
-    RUN_AMPLITUDE_NOISE = True
+    RUN_AMPLITUDE_NOISE = False
     RUN_PHASE_NOISE = False
-    RUN_BOTH_NOISE = False
+    RUN_BOTH_NOISE = True
 
     if RUN_AMPLITUDE_NOISE:
         noise_mode = "amplitude"
@@ -1550,46 +1228,65 @@ def main() -> None:
     else:
         raise ValueError("Choose one noise mode.")
     
+    RUN_NOISE_GAIN_SWEEP = False
 
-    gains_dB = np.linspace(0, 25, 30)
+    if RUN_NOISE_GAIN_SWEEP:
 
-    noise_sweep = sweep_input_noise_gain(
-        base_cfg=cfg,
-        gains_dB=gains_dB,
-        F_low=F_low,
-        F_high=F_high,
-        F_work=F_work,
-        noise_mode=noise_mode,
-    )
+        gains_dB = np.linspace(-10, 30, 20)
 
-    plot_input_noise_gain_sweep(noise_sweep)
+        noise_sweep = sweep_input_noise_gain_simple(
+            base_cfg=cfg,
+            gains_dB=gains_dB,
+            F_work=F_work,
+            noise_mode=noise_mode,
+        )
+
+        plot_input_noise_gain_sweep(noise_sweep)
+    
+
+    # -------------------------------------------------
+    # Sweep de la non linéarité
+    # -------------------------------------------------
+
 
 
     # -------------------------------------------------
-    # 4. Run noisy simulation on upper branch
+    # 4. Run noisy simulation around manual working point
     # -------------------------------------------------
 
     cfg.noise.mode = noise_mode
 
     if noise_mode == "amplitude":
         cfg.noise.strength_phase = 0.0
-        set_input_noise_gain(cfg, gain_dB_amp=5)
+        set_input_noise_gain(cfg, gain_dB_amp=cfg.noise.gain_dB_amp)
 
     elif noise_mode == "phase":
         cfg.noise.strength_amp = 0.0
-        set_input_noise_gain(cfg, gain_dB_phase=5)
+        set_input_noise_gain(cfg, gain_dB_phase=cfg.noise.gain_dB_phase)
 
     elif noise_mode == "both":
         set_input_noise_gain(
             cfg,
-            gain_dB_amp=5,
-            gain_dB_phase=5,
+            gain_dB_amp=cfg.noise.gain_dB_amp,
+            gain_dB_phase=cfg.noise.gain_dB_phase,
         )
 
-    results = run_simulation_with_upper_branch(
+    cfg.cavity.F_s = F_work
+
+    t_settle = time_axis(5e4, cfg.sim.dt_ps)
+    F_settle_t = np.full(t_settle.shape, F_work, dtype=np.complex128)
+
+    psi_settle_t = integrate_cavity(
+        t_settle,
+        F_settle_t,
+        cfg.cavity,
+        integrator=cfg.sim.integrator,
+    )
+
+    cfg.cavity.psi0 = psi_settle_t[-1]
+
+    results = run_simulation_simple(
         cfg,
-        F_low=F_low,
-        F_high=F_high,
         F_work=F_work,
     )
 
@@ -1605,22 +1302,30 @@ def main() -> None:
 
     results.update(bistab_results)
 
-    results["F_low"] = np.array([F_low], dtype=np.complex128)
-    results["F_high"] = np.array([F_high], dtype=np.complex128)
     results["F_work"] = np.array([F_work], dtype=np.complex128)
+    results["nonbistable_mode"] = np.array([True])
 
+    # --------------------------------------------------
+    # Combien de la pente est réellement exploré ?
+    # --------------------------------------------------
 
-    results.update({
-        "transfer_noise_mode": np.array([noise_mode]),
-        "transfer_var_input": noise_sweep["var_input"],
-        "transfer_var_xin": noise_sweep["var_xin"],
-        "transfer_var_pin": noise_sweep["var_pin"],
-        "transfer_var_xout": noise_sweep["var_xout"],
-        "transfer_var_pout": noise_sweep["var_pout"],
-        "transfer_gains_dB": noise_sweep["gains_dB"],
-        "transfer_G_to_Xout": noise_sweep["G_to_Xout"],
-        "transfer_G_to_Pout": noise_sweep["G_to_Pout"],
-    })
+    print_amplitude_drive_excursion(results)
+
+    if RUN_NOISE_GAIN_SWEEP:
+        results.update({
+            "transfer_noise_mode": np.array([noise_mode]),
+            "transfer_var_input": noise_sweep["var_input"],
+            "transfer_var_xin": noise_sweep["var_xin"],
+            "transfer_var_pin": noise_sweep["var_pin"],
+            "transfer_var_xout": noise_sweep["var_xout"],
+            "transfer_var_pout": noise_sweep["var_pout"],
+            "transfer_gains_dB": noise_sweep["gains_dB"],
+            "transfer_Gxx": noise_sweep["Gxx"],
+            "transfer_Gpp": noise_sweep["Gpp"],
+            "transfer_Gxp": noise_sweep["Gxp"],
+            "transfer_Gpx": noise_sweep["Gpx"],
+        })
+
 
 
     # Diagnostics
@@ -1633,17 +1338,10 @@ def main() -> None:
     for k, v in output_stats.items():
         print(f"  {k:>10s} = {v:.6g}")
 
-    # Plots
-    plot_time_traces(results)
-    plot_phase_space(results)
-    plot_kerneldensityestimation(results, remove_mean=True)
-    plot_spectra(results, rbw_mhz=10, fmin_mhz=1e3/1e6, fmax_mhz=2000)
-
 
     # Save
-    #save_results_npz("/Users/charlotte/Documents/Thermal-states/polariton_homodyne_results_balanced_both_6.npz", cfg, results)
-    save_results_npz("Results/polariton_homodyne_results_balanced_amp_alpha=0_8_vac=0_005.npz", cfg, results)
-    print("\nSaved results to Results/polariton_homodyne_results_balanced_amp_alpha=0_8_vac=0_005.npz")
+    save_results_npz("Results/polariton_homodyne_nonbistable_test.npz", cfg, results)
+    print("\nSaved results to Results/polariton_homodyne_nonbistable_test.npz")
 
 
 if __name__ == "__main__":

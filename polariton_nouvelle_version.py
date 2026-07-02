@@ -109,7 +109,7 @@ class CavityConfig:
 
     All dynamical coefficients are in units of ps^-1. To convert from meV, use ħ = 0.658 meV*ps.
     """
-    detuning_inv_ps: float = 1.4e-1 / HBAR_MEV_PS   # Δ = δ_meV / ħ
+    detuning_inv_ps: float = (1.4e-1) / HBAR_MEV_PS   # Δ = δ_meV / ħ
     nonlinearity_inv_ps: float =  1.2e-2 / HBAR_MEV_PS  # U = g_meV_um2 / ħ
     loss_inv_ps: float = 7e-2 / HBAR_MEV_PS       # γ
     kappa_out_inv_ps: float = 7e-2 / HBAR_MEV_PS  # output coupling used in input-output relation
@@ -1287,27 +1287,10 @@ def sweep_g(base_cfg, g_values, noise_mode):
 
         print(
             f"g={g:.4e} | "
-            f"rho={rho_work[-1]:.3f} | "
-            f"Gxx={Gxx[-1]:.3e} | "
-            f"Gpp={Gpp[-1]:.3e}"
+            f"rho={rho_work[-1]:.3f} "
         )
         
-        F_vals = pump["bistab"]["F_up"]
-        rho_low_curve = pump["bistab"]["density_up"]
-        rho_high_curve = pump["bistab"]["density_down"][::-1]
 
-        idx = np.argmin(np.abs(F_vals - np.real(F_work)))
-
-        rho_low = rho_low_curve[idx]
-        rho_high = rho_high_curve[idx]
-        rho = float(res["rho_work"][0])
-
-        print(
-            f"g={g:.4e} | "
-            f"rho={rho:.3f} | "
-            f"rho_low={rho_low:.3f} | "
-            f"rho_high={rho_high:.3f}"
-        )
 
     return {
         "g_values": np.asarray(g_values),
@@ -1481,9 +1464,9 @@ def main() -> None:
     # -------------------------------------------------
     # Sweep du gain du bruit d'amplitude d'entrée
     # -------------------------------------------------
-    RUN_AMPLITUDE_NOISE = True
+    RUN_AMPLITUDE_NOISE = False
     RUN_PHASE_NOISE = False
-    RUN_BOTH_NOISE = False
+    RUN_BOTH_NOISE = True
 
     if RUN_AMPLITUDE_NOISE:
         noise_mode = "amplitude"
@@ -1498,7 +1481,7 @@ def main() -> None:
 
     if RUN_NOISE_GAIN_SWEEP:
 
-        gains_dB = np.linspace(0, 25, 15)
+        gains_dB = np.linspace(0, 35, 20)
 
         noise_sweep = sweep_input_noise_gain(
             base_cfg=cfg,
@@ -1515,13 +1498,13 @@ def main() -> None:
     # -------------------------------------------------
     # Sweep de la non linéarité
     # -------------------------------------------------
-    RUN_G_SWEEP = True
+    RUN_G_SWEEP = False
 
     if RUN_G_SWEEP:
 
         g0 = 1.2e-2
 
-        g_values = g0 * np.linspace(0.02, 1, 30)
+        g_values = g0 * np.linspace(0.02, 2.0, 30)
 
         g_sweep = sweep_g(
             base_cfg=cfg,

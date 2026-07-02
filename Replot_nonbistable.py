@@ -25,6 +25,8 @@ from typing import Any, Dict, Tuple, Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
+from scipy.stats import gaussian_kde
 
 try:
     from scipy.signal import welch
@@ -423,14 +425,27 @@ def plot_phase_space(results: Dict[str, np.ndarray], max_points: int = 50000) ->
         available.append((results["x_out"], results["p_out"], "Output field quadratures", "X_out", "P_out"))
 
     nplots = max(1, len(available))
+
     fig, axes = plt.subplots(1, nplots, figsize=(6 * nplots, 5))
     if nplots == 1:
         axes = [axes]
 
     for ax, (x, p, title, xlabel, ylabel) in zip(axes, available):
+
         step = max(1, len(x) // max_points)
         sl = slice(None, None, step)
+
+        # bornes auto
+        x_min, x_max = np.percentile(x, [0, 100])
+        p_min, p_max = np.percentile(p, [0, 100])
+
+
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(p_min, p_max)
+
         ax.scatter(x[sl], p[sl], s=2, alpha=0.2)
+        ax.set_aspect("auto")
+
         ax.set_title(title)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
@@ -761,6 +776,10 @@ def plot_bistability(results: Dict[str, np.ndarray]) -> Optional[plt.Figure]:
     plt.xlabel("Pump amplitude F")
     plt.ylabel(r"Intracavity density $|\psi|^2$")
     plt.title("Polariton bistability")
+
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(MultipleLocator(0.02))   
+
     plt.grid(True, alpha=0.3)
     plt.legend()
     fig.tight_layout()
@@ -772,13 +791,13 @@ def plot_kerneldensityestimation(
     cmap="magma",
     remove_mean=True,
 ):
-    from scipy.stats import gaussian_kde
 
     datasets = [
         ("Input", results["x_in"], results["p_in"], "X_in", "P_in"),
         ("Intracavity", results["x_cav"], results["p_cav"], "X_cav", "P_cav"),
         ("Output", results["x_out"], results["p_out"], "X_out", "P_out"),
     ]
+
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
 
@@ -800,16 +819,27 @@ def plot_kerneldensityestimation(
             values = values + 1e-8 * np.random.normal(size=values.shape)
             kde = gaussian_kde(values)
 
-        x_min, x_max = np.percentile(x, [0.5, 99.5])
-        p_min, p_max = np.percentile(p, [0.5, 99.5])
+        x_min, x_max = np.percentile(x, [0, 100])
+        p_min, p_max = np.percentile(p, [0, 100])
 
-        # évite extent nul si P_in est constant
+
+
         if abs(x_max - x_min) < 1e-12:
             x_min -= 1e-6
             x_max += 1e-6
         if abs(p_max - p_min) < 1e-12:
             p_min -= 1e-6
             p_max += 1e-6
+
+        pad = 0.1
+
+        dx = x_max - x_min
+        dp = p_max - p_min
+
+        x_min -= pad * dx
+        x_max += pad * dx
+        p_min -= pad * dp
+        p_max += pad * dp
 
         X, P = np.meshgrid(
             np.linspace(x_min, x_max, gridsize),
@@ -818,7 +848,9 @@ def plot_kerneldensityestimation(
 
         positions = np.vstack([X.ravel(), P.ravel()])
         density = kde(positions).reshape(X.shape)
-        density /= np.max(density)
+
+        if np.max(density) > 0:
+            density /= np.max(density)
 
         last_im = ax.imshow(
             density,
@@ -838,7 +870,7 @@ def plot_kerneldensityestimation(
     cbar = fig.colorbar(last_im, ax=axes, shrink=0.95, pad=0.02)
     cbar.set_label("Normalized density", fontsize=14)
 
-    return fig  
+    return fig
 
 def plot_output_noise_vs_input_noise(
     results: Dict[str, np.ndarray]
@@ -934,10 +966,24 @@ def plot_transfer_gain(
 
     fig = plt.figure(figsize=(8, 5))
 
-    plt.plot(results["transfer_gains_dB"], Gxx, "o", ms=4, label=r"$G_{XX}$")
-    plt.plot(results["transfer_gains_dB"], Gpp, "o", ms=4, label=r"$G_{PP}$")
-    plt.plot(results["transfer_gains_dB"], Gxp, "o", ms=4, label=r"$G_{XP}$")
-    plt.plot(results["transfer_gains_dB"], Gpx, "o", ms=4, label=r"$G_{PX}$")
+    mode = "amplitude"
+    if "transfer_noise_mode" in results:
+        mode = str(results["transfer_noise_mode"][0])
+
+    if mode == "amplitude":
+        plt.plot(results["transfer_gains_dB"], Gxx, "o", ms=4, label=r"$G_{XX}$")
+        plt.plot(results["transfer_gains_dB"], Gpx, "o", ms=4, label=r"$G_{PX}$")
+
+    elif mode == "phase":
+        plt.plot(results["transfer_gains_dB"], Gxp, "o", ms=4, label=r"$G_{XP}$")
+        plt.plot(results["transfer_gains_dB"], Gpp, "o", ms=4, label=r"$G_{PP}$")
+
+    elif mode == "both":
+        plt.plot(results["transfer_gains_dB"], Gxx, "o", ms=4, label=r"$G_{XX}$")
+        plt.plot(results["transfer_gains_dB"], Gpp, "o", ms=4, label=r"$G_{PP}$")
+        plt.plot(results["transfer_gains_dB"], Gxp, "o", ms=4, label=r"$G_{XP}$")
+        plt.plot(results["transfer_gains_dB"], Gpx, "o", ms=4, label=r"$G_{PX}$")
+
     
     plt.axvline(5, linestyle="--", color="gray", alpha=0.7, label="Experimental input noise = 5 dB")
     plt.xlabel("Injected input noise gain (dB)")
@@ -957,54 +1003,7 @@ def plot_transfer_gain(
     fig.tight_layout()
     return fig
 
-def plot_g_transfer_gain(results):
 
-    needed = [
-        "g_sweep_g_values",
-        "g_sweep_Gxx",
-        "g_sweep_Gpp",
-        "g_sweep_Gxp",
-        "g_sweep_Gpx",
-    ]
-
-    if not all(k in results for k in needed):
-        print("No g sweep data found.")
-        return None
-
-    eps = 1e-20
-
-    g = results["g_sweep_g_values"]
-
-    Gxx = results["g_sweep_Gxx"]
-    Gpp = results["g_sweep_Gpp"]
-    Gxp = results["g_sweep_Gxp"]
-    Gpx = results["g_sweep_Gpx"]
-
-    #Gxx = 10 * np.log10(np.maximum(results["g_sweep_Gxx"], eps))
-    #Gpp = 10 * np.log10(np.maximum(results["g_sweep_Gpp"], eps))
-    #Gxp = 10 * np.log10(np.maximum(results["g_sweep_Gxp"], eps))
-    #Gpx = 10 * np.log10(np.maximum(results["g_sweep_Gpx"], eps))
-
-    fig = plt.figure(figsize=(8, 5))
-
-    plt.plot(g, Gxx, "o", ms=4, label=r"$G_{XX}$")
-    plt.plot(g, Gpp, "o", ms=4, label=r"$G_{PP}$")
-    plt.plot(g, Gxp, "o", ms=4, label=r"$G_{XP}$")
-    plt.plot(g, Gpx, "o", ms=4, label=r"$G_{PX}$")
-
-    plt.xlabel(r"Nonlinearity $g$")
-    plt.ylabel(
-        r"transfer gain "
-        r"$G_{ij} = \sigma_i^{out}/\sigma_j^{in}$"
-    )
-
-    plt.title("Quadrature noise transfer versus nonlinearity")
-
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-
-    fig.tight_layout()
-    return fig
 
 # -----------------------------------------------------------------------------
 # Saving figures
@@ -1023,23 +1022,22 @@ def main() -> None:
     # -----------------------
     # CONFIG
     # -----------------------
-    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("Results/polariton_homodyne_sweep_g_amp.npz")
+    input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("Results/polariton_homodyne_nonbistable_test.npz")
     save_figures = True
-    output_dir = Path("Plots/sweep_g_amp")
+    output_dir = Path("Plots/nonbistable_test")
 
     # Choose what to replot and how
     time_trace = True
     quadratures_vs_time = True
-    phase_space = False
+    phase_space = True
     spectra = False
     cumulative = False
     psds = False
     lo_sweep = False
-    bistability = False
-    kde_plot = False
+    bistability = True
+    kde_plot = True
     transfer_noise = False
     transfer_gain = False
-    g_transfer = True
 
     # spectrum display choices
     fmin_mhz = 1e-3
@@ -1106,7 +1104,7 @@ def main() -> None:
     if kde_plot:
         figs["quadrature_kde.png"] = plot_kerneldensityestimation(
             results,
-            remove_mean=True
+            remove_mean=False
         )
     if transfer_noise:
         fig_transfer_noise = plot_output_noise_vs_input_noise(results)
@@ -1118,10 +1116,6 @@ def main() -> None:
         if fig_transfer_gain is not None:
             figs["transfer_gain.png"] = fig_transfer_gain
 
-    if g_transfer:
-        fig_g_transfer = plot_g_transfer_gain(results)
-        if fig_g_transfer is not None:
-            figs["g_transfer_gain.png"] = fig_g_transfer
 
 
     balanced_psd_fig = plot_all_balanced_psds(results, rbw_mhz=rbw_mhz, fmin_mhz=fmin_mhz, fmax_mhz=fmax_mhz, loglog=loglog)
